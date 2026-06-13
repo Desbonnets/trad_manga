@@ -1,0 +1,10 @@
+# Normalize line endings
+* text=auto eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.wasm binary
+*.zip binary
+*.xpi binary
+*.crx binary

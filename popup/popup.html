@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Manga Translator</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup">
+    <header class="popup-header">
+      <svg class="popup-logo" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect width="32" height="32" rx="6" fill="#1a1a2e"/>
+        <text x="16" y="22" text-anchor="middle" font-family="serif" font-size="20" font-weight="bold" fill="#e94560">T</text>
+      </svg>
+      <h1 class="popup-title">Manga Translator</h1>
+    </header>
+
+    <main class="popup-main">
+      <button id="btn-translate-page" class="btn btn--primary">
+        <span class="btn-icon" aria-hidden="true">🔍</span>
+        Traduire la page
+      </button>
+
+      <button id="btn-toggle" class="btn btn--secondary">
+        <span class="btn-icon" aria-hidden="true">👁</span>
+        Afficher / Masquer
+      </button>
+
+      <button id="btn-clear" class="btn btn--secondary">
+        <span class="btn-icon" aria-hidden="true">🗑</span>
+        Effacer les traductions
+      </button>
+    </main>
+
+    <footer class="popup-footer">
+      <p class="shortcuts-hint">
+        Clic droit sur une image → <strong>Traduire cette image</strong>
+      </p>
+      <button id="btn-settings" class="btn btn--ghost">⚙ Paramètres</button>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

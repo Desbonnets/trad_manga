@@ -1,0 +1,101 @@
+/* ─── Overlay ──────────────────────────────────────────────────────────────── */
+
+.mt-overlay {
+  position: absolute;
+  z-index: 2147483646;
+  min-width: 140px;
+  max-width: 320px;
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  line-height: 1.45;
+  user-select: text;
+  transition: box-shadow 0.15s;
+}
+
+.mt-overlay.mt-dragging {
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7), 0 0 0 2px rgba(100, 120, 255, 0.4);
+  cursor: grabbing;
+}
+
+.mt-overlay-header {
+  display: flex;
+  justify-content: flex-end;
+  gap: 3px;
+  padding: 4px 6px;
+  cursor: grab;
+  border-radius: 8px 8px 0 0;
+  background: rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.mt-overlay-header:active {
+  cursor: grabbing;
+}
+
+.mt-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  transition: color 0.1s, background-color 0.1s;
+}
+
+.mt-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.mt-overlay-body {
+  padding: 8px 11px 10px;
+}
+
+.mt-original {
+  margin: 0 0 6px;
+  font-size: 0.74em;
+  opacity: 0.45;
+  font-style: italic;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 5px;
+  word-break: break-word;
+}
+
+.mt-translated {
+  margin: 0;
+  font-weight: 500;
+  word-break: break-word;
+}
+
+/* ─── Notifications ────────────────────────────────────────────────────────── */
+
+.mt-notif {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 2147483647;
+  padding: 10px 15px;
+  border-radius: 8px;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  max-width: 340px;
+  word-break: break-word;
+  opacity: 1;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+.mt-notif--info    { background: #1a73e8; color: #fff; }
+.mt-notif--success { background: #137333; color: #fff; }
+.mt-notif--warning { background: #f9ab00; color: #1a1a1a; }
+.mt-notif--error   { background: #c5221f; color: #fff; }

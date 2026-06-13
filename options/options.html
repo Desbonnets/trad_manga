@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Manga Translator — Paramètres</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="options-wrap">
+    <header class="options-header">
+      <h1>⚙ Paramètres — Manga Translator</h1>
+    </header>
+
+    <form id="form-settings" class="options-form" novalidate>
+
+      <!-- ── OCR ── -->
+      <section class="section">
+        <h2 class="section-title">OCR</h2>
+
+        <div class="field">
+          <label for="ocr-lang">Langue OCR</label>
+          <select id="ocr-lang" name="ocrLang">
+            <option value="eng">Anglais (eng)</option>
+            <option value="jpn">Japonais (jpn)</option>
+            <option value="kor">Coréen (kor)</option>
+            <option value="spa">Espagnol (spa)</option>
+            <option value="fra">Français (fra)</option>
+          </select>
+        </div>
+      </section>
+
+      <!-- ── Translation ── -->
+      <section class="section">
+        <h2 class="section-title">Traduction</h2>
+
+        <div class="field">
+          <label for="source-lang">Langue source</label>
+          <select id="source-lang" name="sourceLang">
+            <option value="en">Anglais</option>
+            <option value="ja">Japonais</option>
+            <option value="ko">Coréen</option>
+            <option value="es">Espagnol</option>
+            <option value="zh">Chinois</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="target-lang">Langue cible</label>
+          <select id="target-lang" name="targetLang">
+            <option value="fr">Français</option>
+            <option value="en">Anglais</option>
+            <option value="es">Espagnol</option>
+            <option value="de">Allemand</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="translation-api">API de traduction</label>
+          <select id="translation-api" name="translationApi">
+            <option value="mymemory">MyMemory (gratuit, sans clé)</option>
+            <option value="libretranslate">LibreTranslate (auto-hébergé)</option>
+          </select>
+        </div>
+
+        <div class="field" id="field-endpoint" style="display:none">
+          <label for="translation-endpoint">URL du serveur LibreTranslate</label>
+          <input
+            type="url"
+            id="translation-endpoint"
+            name="translationEndpoint"
+            placeholder="http://localhost:5000"
+          >
+          <p class="field-hint">
+            Ex : <code>https://libretranslate.com</code> ou votre instance locale.
+          </p>
+        </div>
+      </section>
+
+      <!-- ── Display ── -->
+      <section class="section">
+        <h2 class="section-title">Affichage</h2>
+
+        <div class="field">
+          <label for="font-size">Taille du texte : <strong id="font-size-val">14</strong> px</label>
+          <input type="range" id="font-size" name="fontSize" min="10" max="24" step="1">
+        </div>
+
+        <div class="field">
+          <label for="opacity">Opacité du fond : <strong id="opacity-val">92</strong> %</label>
+          <input type="range" id="opacity" name="opacity" min="20" max="100" step="2">
+        </div>
+
+        <div class="field field--row">
+          <div>
+            <label for="bg-color">Couleur du fond</label>
+            <input type="color" id="bg-color" name="bgColor">
+          </div>
+          <div>
+            <label for="text-color">Couleur du texte</label>
+            <input type="color" id="text-color" name="textColor">
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Actions ── -->
+      <div class="options-actions">
+        <button type="submit" class="btn btn--primary">Enregistrer</button>
+        <button type="button" id="btn-reset" class="btn btn--ghost">Réinitialiser</button>
+        <span class="save-feedback" id="save-feedback" aria-live="polite"></span>
+      </div>
+
+    </form>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

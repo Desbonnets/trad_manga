@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Tesseract.js built files (regenerated via: npm install && node scripts/setup.js)
+lib/tesseract.min.js
+lib/worker.min.js
+lib/*.wasm
+lib/*.js.map
+
+# web-ext build output
+web-ext-artifacts/
+*.zip
+*.xpi
+*.crx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*

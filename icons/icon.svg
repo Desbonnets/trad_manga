@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" fill="#1a1a2e"/>
+  <!-- Book pages -->
+  <rect x="22" y="28" width="38" height="72" rx="4" fill="#16213e"/>
+  <rect x="68" y="28" width="38" height="72" rx="4" fill="#16213e"/>
+  <!-- Spine -->
+  <rect x="58" y="28" width="12" height="72" rx="2" fill="#0f3460"/>
+  <!-- Lines representing text -->
+  <rect x="28" y="44" width="26" height="4" rx="2" fill="#334"/>
+  <rect x="28" y="54" width="20" height="4" rx="2" fill="#334"/>
+  <rect x="28" y="64" width="24" height="4" rx="2" fill="#334"/>
+  <rect x="28" y="74" width="18" height="4" rx="2" fill="#334"/>
+  <!-- "T" for Traduction badge -->
+  <circle cx="88" cy="40" r="20" fill="#e94560"/>
+  <text x="88" y="47" text-anchor="middle" font-family="serif" font-size="22" font-weight="bold" fill="#fff">T</text>
+</svg>
