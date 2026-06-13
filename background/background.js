@@ -111,13 +111,22 @@ async function captureImageRegion(tab, rect, dpr) {
   const cropW = Math.max(1, px(rect.width));
   const cropH = Math.max(1, px(rect.height));
 
-  const canvas = new OffscreenCanvas(cropW, cropH);
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(
+  // Crop at native resolution first
+  const cropCanvas = new OffscreenCanvas(cropW, cropH);
+  cropCanvas.getContext('2d').drawImage(
     imageBitmap,
-    px(rect.left), px(rect.top), cropW, cropH, // source region
-    0, 0, cropW, cropH                          // destination
+    px(rect.left), px(rect.top), cropW, cropH,
+    0, 0, cropW, cropH
   );
+
+  // Upscale 2× — screenshot resolution is often too low for Tesseract to detect
+  // small manga speech-bubble text reliably.
+  const UPSCALE = 2;
+  const canvas = new OffscreenCanvas(cropW * UPSCALE, cropH * UPSCALE);
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(cropCanvas, 0, 0, cropW * UPSCALE, cropH * UPSCALE);
 
   const croppedBlob = await canvas.convertToBlob({ type: 'image/png' });
 
