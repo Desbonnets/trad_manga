@@ -261,25 +261,39 @@ async function runOCR(imageData, lang, loader) {
 // ─── Image helpers ─────────────────────────────────────────────────────────────
 
 async function getImageDataUrl(img) {
-  // Try direct canvas (same-origin or CORS-enabled images)
+  // Method 1: Direct canvas — works for same-origin or CORS-enabled images.
   try {
     const canvas = document.createElement('canvas');
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
-    if (w === 0 || h === 0) throw new Error('image non chargée (taille 0)');
+    if (w === 0 || h === 0) throw new Error('zero size');
     canvas.width = w;
     canvas.height = h;
     canvas.getContext('2d').drawImage(img, 0, 0);
-    return canvas.toDataURL('image/png'); // throws if cross-origin taint
+    return canvas.toDataURL('image/png'); // throws SecurityError if cross-origin tainted
   } catch {
-    // Cross-origin: fetch via background (has <all_urls> host_permissions)
-    const result = await chrome.runtime.sendMessage({
-      action: 'fetchImageAsDataUrl',
-      url: img.src
-    });
-    if (!result || result.error) throw new Error(result?.error || 'Fetch échoué');
-    return result.dataUrl;
+    // Fall through to Method 2
   }
+
+  // Method 2: Screenshot + crop via captureVisibleTab.
+  // The browser has already loaded and rendered the image — no network request needed,
+  // so hotlink protection (403 Referer check) is completely bypassed.
+  img.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+  await new Promise(r => setTimeout(r, 180)); // let the browser finish scrolling
+
+  const rect = img.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) {
+    throw new Error("L'image n'est pas visible dans la fenêtre");
+  }
+
+  const result = await chrome.runtime.sendMessage({
+    action: 'captureImageRegion',
+    rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+    dpr: window.devicePixelRatio || 1
+  });
+
+  if (result?.dataUrl) return result.dataUrl;
+  throw new Error(result?.error || "Échec de la capture d'écran");
 }
 
 function findImageBySrc(srcUrl) {
