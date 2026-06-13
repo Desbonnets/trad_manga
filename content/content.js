@@ -38,6 +38,136 @@ function defaultSettings() {
   };
 }
 
+// ─── Loader ────────────────────────────────────────────────────────────────────
+
+let activeLoader = null;
+
+function createLoader() {
+  if (activeLoader) activeLoader.remove();
+
+  const el = document.createElement('div');
+  el.id = 'mt-loader';
+  // Use inline styles + !important to resist page CSS overrides
+  el.style.cssText = [
+    'position:fixed!important',
+    'bottom:24px!important',
+    'right:24px!important',
+    'z-index:2147483647!important',
+    'min-width:230px',
+    'max-width:320px',
+    'background:rgba(15,15,26,0.97)',
+    'color:#e8e8f0',
+    'font-family:system-ui,sans-serif',
+    'font-size:13px',
+    'border-radius:10px',
+    'box-shadow:0 8px 32px rgba(0,0,0,0.55),0 0 0 1px rgba(255,255,255,0.08)',
+    'padding:14px 16px',
+    'pointer-events:none',
+    'display:flex!important',
+    'flex-direction:column',
+    'gap:8px'
+  ].join(';');
+
+  // Spinner + label row
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;align-items:center;gap:10px';
+
+  const spinner = document.createElement('div');
+  spinner.style.cssText = [
+    'width:18px',
+    'height:18px',
+    'border:2px solid rgba(233,69,96,0.25)',
+    'border-top-color:#e94560',
+    'border-radius:50%',
+    'flex-shrink:0',
+    'animation:mt-spin 0.75s linear infinite'
+  ].join(';');
+
+  // Inject keyframes once
+  if (!document.getElementById('mt-keyframes')) {
+    const style = document.createElement('style');
+    style.id = 'mt-keyframes';
+    style.textContent = '@keyframes mt-spin{to{transform:rotate(360deg)}}';
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  const label = document.createElement('span');
+  label.textContent = 'Initialisation…';
+  label.style.cssText = 'font-weight:500;flex:1';
+
+  row.append(spinner, label);
+
+  // Progress bar
+  const barWrap = document.createElement('div');
+  barWrap.style.cssText = 'height:3px;background:rgba(255,255,255,0.1);border-radius:2px;overflow:hidden';
+
+  const barFill = document.createElement('div');
+  barFill.style.cssText = 'height:100%;width:0%;background:#e94560;border-radius:2px;transition:width 0.2s ease';
+  barWrap.appendChild(barFill);
+
+  // Sub-label
+  const sub = document.createElement('span');
+  sub.style.cssText = 'font-size:11px;color:rgba(255,255,255,0.4);line-height:1.3';
+
+  el.append(row, barWrap, sub);
+  (document.body || document.documentElement).appendChild(el);
+
+  activeLoader = {
+    el,
+    update(text, progress, subText) {
+      label.textContent = text;
+      if (progress !== undefined) barFill.style.width = `${Math.round(progress * 100)}%`;
+      if (subText !== undefined) sub.textContent = subText;
+    },
+    remove() {
+      el.remove();
+      activeLoader = null;
+    }
+  };
+
+  return activeLoader;
+}
+
+// ─── Notifications (inline styles to resist page CSS) ──────────────────────────
+
+function notify(message, type = 'info') {
+  const palette = {
+    info:    { bg: '#1a73e8', color: '#fff' },
+    success: { bg: '#137333', color: '#fff' },
+    warning: { bg: '#f9ab00', color: '#1a1a1a' },
+    error:   { bg: '#c5221f', color: '#fff' }
+  };
+  const c = palette[type] || palette.info;
+
+  const el = document.createElement('div');
+  el.style.cssText = [
+    'position:fixed!important',
+    'bottom:24px!important',
+    'right:24px!important',
+    'z-index:2147483647!important',
+    'padding:10px 14px',
+    'border-radius:8px',
+    `background:${c.bg}`,
+    `color:${c.color}`,
+    'font-family:system-ui,sans-serif',
+    'font-size:13px',
+    'font-weight:500',
+    'box-shadow:0 4px 16px rgba(0,0,0,0.35)',
+    'max-width:340px',
+    'word-break:break-word',
+    'pointer-events:none',
+    'opacity:1',
+    'transition:opacity 0.3s'
+  ].join(';');
+  el.textContent = message;
+  (document.body || document.documentElement).appendChild(el);
+
+  setTimeout(() => {
+    el.style.opacity = '0';
+    setTimeout(() => el.remove(), 300);
+  }, 3000);
+}
+
 // ─── OCR Frame ─────────────────────────────────────────────────────────────────
 
 function initOCRFrame() {
@@ -46,47 +176,75 @@ function initOCRFrame() {
   const frame = document.createElement('iframe');
   frame.src = chrome.runtime.getURL('ocr/ocr-frame.html');
   frame.setAttribute('aria-hidden', 'true');
-  frame.style.cssText =
-    'display:none;position:fixed;width:0;height:0;border:none;z-index:-1;';
+  // visibility:hidden keeps the frame loaded and functional (unlike display:none which
+  // some browsers defer). Position it off-screen so it never affects layout.
+  frame.style.cssText = [
+    'position:fixed',
+    'top:-9999px',
+    'left:-9999px',
+    'width:1px',
+    'height:1px',
+    'border:none',
+    'visibility:hidden',
+    'pointer-events:none'
+  ].join(';');
   (document.body || document.documentElement).appendChild(frame);
   state.ocrFrame = frame;
 }
 
 window.addEventListener('message', e => {
-  const { type, id, blocks, error } = e.data || {};
+  const msg = e.data;
+  if (!msg || typeof msg.type !== 'string') return;
 
-  if (type === 'MT_OCR_READY') {
+  if (msg.type === 'MT_OCR_READY') {
     state.ocrReady = true;
     return;
   }
 
-  if (type === 'MT_OCR_RESULT') {
-    const cb = state.ocrCallbacks.get(id);
+  if (msg.type === 'MT_OCR_PROGRESS' && activeLoader) {
+    const pct = Math.round((msg.progress || 0) * 100);
+    const labels = {
+      'loading tesseract core': `Chargement du moteur OCR… ${pct}%`,
+      'loading language traineddata': `Téléchargement des données linguistiques… ${pct}%`,
+      'initializing tesseract': `Initialisation… ${pct}%`,
+      'initializing api': `Initialisation… ${pct}%`,
+      'recognizing text': `Reconnaissance du texte… ${pct}%`
+    };
+    const text = labels[msg.status] || `OCR en cours… ${pct}%`;
+    const subText = pct < 100 ? 'Patientez, le premier lancement télécharge les données OCR (~4 Mo)' : '';
+    activeLoader.update(text, msg.progress, subText);
+    return;
+  }
+
+  if (msg.type === 'MT_OCR_RESULT') {
+    const cb = state.ocrCallbacks.get(msg.id);
     if (!cb) return;
-    state.ocrCallbacks.delete(id);
-    if (error) cb.reject(new Error(error));
-    else cb.resolve(blocks);
+    state.ocrCallbacks.delete(msg.id);
+    if (msg.error) cb.reject(new Error(msg.error));
+    else cb.resolve(msg.blocks);
   }
 });
 
-function waitForOCRReady(timeoutMs = 20000) {
+function waitForOCRReady(timeoutMs = 30000) {
   if (state.ocrReady) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const start = Date.now();
     const check = () => {
       if (state.ocrReady) { resolve(); return; }
       if (Date.now() - start > timeoutMs) {
-        reject(new Error('OCR frame timeout'));
+        reject(new Error("La frame OCR n'a pas répondu (timeout 30s)"));
         return;
       }
-      setTimeout(check, 100);
+      setTimeout(check, 150);
     };
     check();
   });
 }
 
-async function runOCR(imageData, lang) {
+async function runOCR(imageData, lang, loader) {
   initOCRFrame();
+
+  if (loader) loader.update('Connexion au moteur OCR…', 0);
   await waitForOCRReady();
 
   const id = ++state.ocrRequestId;
@@ -102,31 +260,32 @@ async function runOCR(imageData, lang) {
 // ─── Image helpers ─────────────────────────────────────────────────────────────
 
 async function getImageDataUrl(img) {
-  // Try direct canvas (works for same-origin or CORS-enabled images)
+  // Try direct canvas (same-origin or CORS-enabled images)
   try {
     const canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth || img.width;
-    canvas.height = img.naturalHeight || img.height;
-    if (canvas.width === 0 || canvas.height === 0) throw new Error('zero-size image');
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0);
-    const dataUrl = canvas.toDataURL('image/png'); // throws if tainted
-    return dataUrl;
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    if (w === 0 || h === 0) throw new Error('image non chargée (taille 0)');
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d').drawImage(img, 0, 0);
+    return canvas.toDataURL('image/png'); // throws if cross-origin taint
   } catch {
-    // Cross-origin: ask background to fetch it
+    // Cross-origin: fetch via background (has <all_urls> host_permissions)
     const result = await chrome.runtime.sendMessage({
       action: 'fetchImageAsDataUrl',
       url: img.src
     });
-    if (result.error) throw new Error(result.error);
+    if (!result || result.error) throw new Error(result?.error || 'Fetch échoué');
     return result.dataUrl;
   }
 }
 
 function findImageBySrc(srcUrl) {
+  if (!srcUrl) return null;
   return Array.from(document.querySelectorAll('img')).find(
     img => img.src === srcUrl || img.currentSrc === srcUrl
-  );
+  ) || null;
 }
 
 // ─── Translation ───────────────────────────────────────────────────────────────
@@ -139,7 +298,7 @@ async function translate(text, { sourceLang, targetLang, translationApi, transla
     }
     return await translateMyMemory(text, sourceLang, targetLang);
   } catch {
-    return text; // return original on error
+    return text;
   }
 }
 
@@ -178,14 +337,13 @@ function createOverlay(block, translatedText, imageRect, imageEl) {
   el.style.cssText = `left:${x}px;top:${y}px;font-size:${s.fontSize}px;` +
     `background:${hexToRgba(s.bgColor, s.opacity)};color:${s.textColor};`;
 
-  // Header (drag handle + controls)
   const header = document.createElement('div');
   header.className = 'mt-overlay-header';
 
   const btnMinimize = makeBtn('−', 'mt-btn', 'Réduire', () => {
-    const isHidden = body.style.display === 'none';
-    body.style.display = isHidden ? '' : 'none';
-    btnMinimize.textContent = isHidden ? '−' : '+';
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? '' : 'none';
+    btnMinimize.textContent = hidden ? '−' : '+';
   });
 
   const btnClose = makeBtn('×', 'mt-btn', 'Fermer', () => {
@@ -195,7 +353,6 @@ function createOverlay(block, translatedText, imageRect, imageEl) {
 
   header.append(btnMinimize, btnClose);
 
-  // Body
   const body = document.createElement('div');
   body.className = 'mt-overlay-body';
 
@@ -227,16 +384,13 @@ function makeBtn(label, cls, title, onClick) {
 
 function makeDraggable(el, handle) {
   let ox, oy, ol, ot;
-
   handle.addEventListener('mousedown', e => {
     if (e.target.classList.contains('mt-btn')) return;
     e.preventDefault();
-    ox = e.clientX;
-    oy = e.clientY;
+    ox = e.clientX; oy = e.clientY;
     ol = parseInt(el.style.left) || 0;
     ot = parseInt(el.style.top) || 0;
     el.classList.add('mt-dragging');
-
     const move = e => {
       el.style.left = `${ol + e.clientX - ox}px`;
       el.style.top = `${ot + e.clientY - oy}px`;
@@ -259,62 +413,61 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-// ─── Notifications ─────────────────────────────────────────────────────────────
-
-function notify(message, type = 'info') {
-  const el = document.createElement('div');
-  el.className = `mt-notif mt-notif--${type}`;
-  el.textContent = message;
-  document.body.appendChild(el);
-  setTimeout(() => {
-    el.style.opacity = '0';
-    setTimeout(() => el.remove(), 300);
-  }, 2700);
-}
-
 // ─── Main actions ──────────────────────────────────────────────────────────────
 
 async function translateImage(imageEl) {
   if (!imageEl) {
-    notify('Aucune image sélectionnée', 'error');
+    notify("Aucune image sélectionnée — survolez l'image avant de cliquer", 'error');
     return;
   }
 
   await loadSettings();
-  notify('Analyse OCR en cours…', 'info');
+
+  const loader = createLoader();
+  loader.update('Lecture de l\'image…', 0);
 
   let dataUrl;
   try {
     dataUrl = await getImageDataUrl(imageEl);
   } catch (err) {
+    loader.remove();
     notify(`Impossible de lire l'image : ${err.message}`, 'error');
     return;
   }
 
+  loader.update('Connexion au moteur OCR…', 0.02);
+
   let blocks;
   try {
-    blocks = await runOCR(dataUrl, state.settings.ocrLang);
+    blocks = await runOCR(dataUrl, state.settings.ocrLang, loader);
   } catch (err) {
+    loader.remove();
     notify(`Erreur OCR : ${err.message}`, 'error');
     return;
   }
 
   if (!blocks || blocks.length === 0) {
-    notify('Aucun texte détecté dans l'image', 'warning');
+    loader.remove();
+    notify("Aucun texte détecté dans l'image", 'warning');
     return;
   }
 
-  notify(`${blocks.length} bloc(s) détecté(s) — traduction…`, 'info');
-
+  loader.update(`${blocks.length} bloc(s) trouvé(s) — traduction…`, 1, '');
   const rect = imageEl.getBoundingClientRect();
 
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i];
+    loader.update(
+      `Traduction ${i + 1} / ${blocks.length}…`,
+      1,
+      block.text.slice(0, 50) + (block.text.length > 50 ? '…' : '')
+    );
     const translated = await translate(block.text, state.settings);
     createOverlay(block, translated, rect, imageEl);
   }
 
-  notify(`Traduction terminée (${blocks.length} bloc(s))`, 'success');
+  loader.remove();
+  notify(`Traduction terminée — ${blocks.length} bloc(s)`, 'success');
 }
 
 async function translatePage() {
@@ -328,7 +481,7 @@ async function translatePage() {
     return;
   }
 
-  notify(`Traduction de ${images.length} image(s)…`, 'info');
+  notify(`Traduction de ${images.length} image(s) en cours…`, 'info');
   for (const img of images) await translateImage(img);
 }
 
