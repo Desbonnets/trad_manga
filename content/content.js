@@ -29,8 +29,9 @@ function defaultSettings() {
     ocrLang: 'eng',
     sourceLang: 'en',
     targetLang: 'fr',
-    translationApi: 'mymemory',
+    translationApi: 'lingva',
     translationEndpoint: '',
+    deepLKey: '',
     fontSize: 14,
     opacity: 0.92,
     bgColor: '#0f0f1a',
@@ -290,34 +291,108 @@ function findImageBySrc(srcUrl) {
 
 // ─── Translation ───────────────────────────────────────────────────────────────
 
-async function translate(text, { sourceLang, targetLang, translationApi, translationEndpoint }) {
+// Multiple Lingva public instances — tried in order until one succeeds
+const LINGVA_INSTANCES = [
+  'https://lingva.ml',
+  'https://lingva.gaais.me',
+  'https://translate.plausibility.cloud'
+];
+
+async function translate(text, settings) {
+  const { sourceLang, targetLang, translationApi, translationEndpoint, deepLKey } = settings;
   if (!text.trim()) return text;
   try {
-    if (translationApi === 'libretranslate' && translationEndpoint) {
-      return await translateLibreTranslate(text, sourceLang, targetLang, translationEndpoint);
+    switch (translationApi) {
+      case 'deepl':
+        if (deepLKey) return await translateDeepL(text, sourceLang, targetLang, deepLKey);
+        // No key → fall through to Lingva
+        // falls through
+      case 'lingva':
+      default:
+        try {
+          return await translateLingva(text, sourceLang, targetLang);
+        } catch {
+          // Lingva failed → fallback to MyMemory
+          return await translateMyMemory(text, sourceLang, targetLang);
+        }
+      case 'mymemory':
+        return await translateMyMemory(text, sourceLang, targetLang);
+      case 'libretranslate':
+        if (translationEndpoint) {
+          return await translateLibreTranslate(text, sourceLang, targetLang, translationEndpoint);
+        }
+        return await translateLingva(text, sourceLang, targetLang);
     }
-    return await translateMyMemory(text, sourceLang, targetLang);
   } catch {
     return text;
   }
 }
 
+// Lingva Translate — free, no key, community-hosted instances
+async function translateLingva(text, src, tgt) {
+  for (const base of LINGVA_INSTANCES) {
+    try {
+      const res = await fetch(
+        `${base}/api/v1/${src}/${tgt}/${encodeURIComponent(text)}`,
+        { signal: AbortSignal.timeout(8000) }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.translation) return data.translation;
+      throw new Error('Réponse vide');
+    } catch {
+      // Try next instance
+    }
+  }
+  throw new Error('Toutes les instances Lingva ont échoué');
+}
+
+// DeepL Free — 500 000 chars/mois, clé gratuite sur deepl.com
+async function translateDeepL(text, src, tgt, apiKey) {
+  // DeepL expects uppercase ISO codes. Target French variant = FR, not fr-FR.
+  const toDeepL = code => code.toUpperCase().split('-')[0];
+  const res = await fetch('https://api-free.deepl.com/v2/translate', {
+    method: 'POST',
+    headers: {
+      'Authorization': `DeepL-Auth-Key ${apiKey}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: new URLSearchParams({
+      text,
+      source_lang: toDeepL(src),
+      target_lang: toDeepL(tgt)
+    }).toString()
+  });
+  if (!res.ok) {
+    const msg = res.status === 403
+      ? 'Clé DeepL invalide ou quota dépassé'
+      : `DeepL HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  const data = await res.json();
+  return data.translations[0].text;
+}
+
+// MyMemory — gratuit jusqu'à 5 000 chars/jour par IP
 async function translateMyMemory(text, src, tgt) {
   const url =
     `https://api.mymemory.translated.net/get` +
     `?q=${encodeURIComponent(text)}&langpair=${src}|${tgt}`;
   const res = await fetch(url);
+  if (!res.ok) throw new Error(`MyMemory HTTP ${res.status}`);
   const data = await res.json();
   if (data.responseStatus === 200) return data.responseData.translatedText;
   throw new Error(data.responseMessage || 'MyMemory error');
 }
 
+// LibreTranslate — auto-hébergé ou instance publique
 async function translateLibreTranslate(text, src, tgt, endpoint) {
   const res = await fetch(`${endpoint.replace(/\/$/, '')}/translate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ q: text, source: src, target: tgt, format: 'text' })
   });
+  if (!res.ok) throw new Error(`LibreTranslate HTTP ${res.status}`);
   const data = await res.json();
   return data.translatedText;
 }
