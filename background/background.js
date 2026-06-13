@@ -23,8 +23,9 @@ function defaultSettings() {
     ocrLang: 'eng',
     sourceLang: 'en',
     targetLang: 'fr',
-    translationApi: 'mymemory',
+    translationApi: 'lingva',
     translationEndpoint: '',
+    deepLKey: '',
     fontSize: 14,
     opacity: 0.92,
     bgColor: '#0f0f1a',
@@ -54,18 +55,18 @@ chrome.commands.onCommand.addListener((command, tab) => {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.action) {
-    // Popup → all tabs
+    // Popup → active tab
     case 'translatePage':
     case 'toggleTranslations':
     case 'clearTranslations':
       forwardToActiveTab(msg);
       break;
 
-    // Content script asks to fetch a cross-origin image
-    case 'fetchImageAsDataUrl':
-      fetchImageAsDataUrl(msg.url).then(sendResponse).catch(err =>
-        sendResponse({ error: err.message })
-      );
+    // Content script: screenshot + crop (bypasses hotlink protection)
+    case 'captureImageRegion':
+      captureImageRegion(sender.tab, msg.rect, msg.dpr)
+        .then(sendResponse)
+        .catch(err => sendResponse({ error: err.message }));
       return true; // async
 
     // Settings CRUD
@@ -89,14 +90,41 @@ function forwardToActiveTab(msg) {
   });
 }
 
-async function fetchImageAsDataUrl(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const blob = await res.blob();
+// Capture a region of the currently visible tab as a PNG data URL.
+// Uses captureVisibleTab so the image is read from the browser's rendered frame —
+// no network request is made, which completely bypasses hotlink protection (403).
+async function captureImageRegion(tab, rect, dpr) {
+  const windowId = tab?.windowId ?? chrome.windows.WINDOW_ID_CURRENT;
+
+  const screenshotDataUrl = await chrome.tabs.captureVisibleTab(windowId, {
+    format: 'png'
+  });
+
+  // Decode screenshot into an ImageBitmap, then crop with OffscreenCanvas
+  const response = await fetch(screenshotDataUrl);
+  const blob = await response.blob();
+  const imageBitmap = await createImageBitmap(blob);
+
+  // rect is in CSS pixels; the screenshot is in physical pixels (CSS px * dpr)
+  const px = v => Math.round(v * dpr);
+
+  const cropW = Math.max(1, px(rect.width));
+  const cropH = Math.max(1, px(rect.height));
+
+  const canvas = new OffscreenCanvas(cropW, cropH);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(
+    imageBitmap,
+    px(rect.left), px(rect.top), cropW, cropH, // source region
+    0, 0, cropW, cropH                          // destination
+  );
+
+  const croppedBlob = await canvas.convertToBlob({ type: 'image/png' });
+
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve({ dataUrl: reader.result });
     reader.onerror = () => reject(new Error('FileReader error'));
-    reader.readAsDataURL(blob);
+    reader.readAsDataURL(croppedBlob);
   });
 }

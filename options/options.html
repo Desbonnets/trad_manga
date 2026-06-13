@@ -58,9 +58,34 @@
         <div class="field">
           <label for="translation-api">API de traduction</label>
           <select id="translation-api" name="translationApi">
-            <option value="mymemory">MyMemory (gratuit, sans clé)</option>
-            <option value="libretranslate">LibreTranslate (auto-hébergé)</option>
+            <option value="lingva">Lingva Translate — gratuit, sans clé, aucune limite</option>
+            <option value="deepl">DeepL Free — 500 000 chars/mois (clé gratuite requise)</option>
+            <option value="mymemory">MyMemory — gratuit, sans clé, 5 000 chars/jour</option>
+            <option value="libretranslate">LibreTranslate — auto-hébergé</option>
           </select>
+          <p class="field-hint" id="api-hint-lingva">
+            Utilise plusieurs instances publiques Lingva (façade Google Translate).
+            Bascule automatiquement sur MyMemory si toutes les instances échouent.
+          </p>
+          <p class="field-hint" id="api-hint-deepl" style="display:none">
+            Créez une clé gratuite sur
+            <a href="https://www.deepl.com/fr/pro#developer" target="_blank" rel="noopener">deepl.com → Développeur → Free</a>.
+            La clé se termine par <code>:fx</code>.
+          </p>
+          <p class="field-hint" id="api-hint-mymemory" style="display:none">
+            Limite : 5 000 caractères / jour par IP. Au-delà → erreur 403.
+          </p>
+        </div>
+
+        <div class="field" id="field-deepl-key" style="display:none">
+          <label for="deepl-key">Clé API DeepL Free</label>
+          <input
+            type="password"
+            id="deepl-key"
+            name="deepLKey"
+            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:fx"
+            autocomplete="off"
+          >
         </div>
 
         <div class="field" id="field-endpoint" style="display:none">
