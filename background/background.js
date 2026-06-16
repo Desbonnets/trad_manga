@@ -41,14 +41,14 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     chrome.tabs.sendMessage(tab.id, {
       action: 'translateImage',
       srcUrl: info.srcUrl
-    });
+    }).catch(() => {});
   }
 });
 
 // ─── Keyboard shortcuts ────────────────────────────────────────────────────────
 
 chrome.commands.onCommand.addListener((command, tab) => {
-  chrome.tabs.sendMessage(tab.id, { action: command });
+  chrome.tabs.sendMessage(tab.id, { action: command }).catch(() => {});
 });
 
 // ─── Messages ──────────────────────────────────────────────────────────────────
@@ -86,7 +86,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 function forwardToActiveTab(msg) {
   chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
-    if (tabs[0]) chrome.tabs.sendMessage(tabs[0].id, msg);
+    if (tabs[0]) chrome.tabs.sendMessage(tabs[0].id, msg).catch(() => {});
   });
 }
 

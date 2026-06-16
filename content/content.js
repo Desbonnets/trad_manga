@@ -146,7 +146,7 @@ function notify(message, type = 'info') {
     'bottom:24px!important',
     'right:24px!important',
     'z-index:2147483647!important',
-    'padding:10px 14px',
+    'padding:10px 10px 10px 14px',
     'border-radius:8px',
     `background:${c.bg}`,
     `color:${c.color}`,
@@ -156,17 +156,45 @@ function notify(message, type = 'info') {
     'box-shadow:0 4px 16px rgba(0,0,0,0.35)',
     'max-width:340px',
     'word-break:break-word',
-    'pointer-events:none',
+    'pointer-events:auto',
     'opacity:1',
-    'transition:opacity 0.3s'
+    'transition:opacity 0.3s',
+    'display:flex!important',
+    'align-items:flex-start',
+    'gap:10px'
   ].join(';');
-  el.textContent = message;
+
+  const text = document.createElement('span');
+  text.style.cssText = 'flex:1';
+  text.textContent = message;
+
+  const btnClose = document.createElement('button');
+  btnClose.textContent = '×';
+  btnClose.style.cssText = [
+    'flex-shrink:0',
+    'background:none',
+    'border:none',
+    'cursor:pointer',
+    'font-size:16px',
+    'line-height:1',
+    'padding:0 2px',
+    'opacity:0.65',
+    `color:${c.color}`
+  ].join(';');
+  btnClose.addEventListener('mouseover', () => { btnClose.style.opacity = '1'; });
+  btnClose.addEventListener('mouseout',  () => { btnClose.style.opacity = '0.65'; });
+  btnClose.addEventListener('click', dismiss);
+
+  el.append(text, btnClose);
   (document.body || document.documentElement).appendChild(el);
 
-  setTimeout(() => {
+  const timer = setTimeout(dismiss, 10000);
+
+  function dismiss() {
+    clearTimeout(timer);
     el.style.opacity = '0';
     setTimeout(() => el.remove(), 300);
-  }, 3000);
+  }
 }
 
 // ─── OCR Frame ─────────────────────────────────────────────────────────────────
