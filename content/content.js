@@ -249,6 +249,7 @@ window.addEventListener('message', e => {
     const cb = state.ocrCallbacks.get(msg.id);
     if (!cb) return;
     state.ocrCallbacks.delete(msg.id);
+    if (msg.debug) console.log('[MT] OCR debug:', msg.debug);
     if (msg.error) cb.reject(new Error(msg.error));
     else cb.resolve(msg.blocks);
   }
@@ -310,15 +311,32 @@ async function getImageDataUrl(img) {
   await new Promise(r => setTimeout(r, 180)); // let the browser finish scrolling
 
   const rect = img.getBoundingClientRect();
-  if (rect.width === 0 || rect.height === 0) {
+
+  // Clip to the visible viewport — webtoon images are often thousands of pixels tall
+  // so rect.top is negative and rect.height >> viewport height after scrollIntoView.
+  // Passing unclipped values causes captureVisibleTab to crop outside the screenshot.
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const clippedRect = {
+    left:   Math.max(0, rect.left),
+    top:    Math.max(0, rect.top),
+    width:  Math.min(rect.right,  vw) - Math.max(0, rect.left),
+    height: Math.min(rect.bottom, vh) - Math.max(0, rect.top)
+  };
+
+  if (clippedRect.width <= 0 || clippedRect.height <= 0) {
     throw new Error("L'image n'est pas visible dans la fenêtre");
   }
 
+  console.log('[MT] capture rect:', JSON.stringify(clippedRect), '| img natural:', img.naturalWidth, '×', img.naturalHeight);
+
   const result = await chrome.runtime.sendMessage({
     action: 'captureImageRegion',
-    rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+    rect: clippedRect,
     dpr: window.devicePixelRatio || 1
   });
+
+  console.log('[MT] captureImageRegion →', result?.dataUrl ? `OK (${result.dataUrl.length} chars)` : `ERREUR: ${result?.error}`);
 
   if (result?.dataUrl) return result.dataUrl;
   throw new Error(result?.error || "Échec de la capture d'écran");

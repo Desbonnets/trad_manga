@@ -41,14 +41,23 @@ function copyTesseract() {
     copied++;
   }
 
-  // Also copy tesseract-core files if present (optional — falls back to CDN)
-  const coreFiles = fs.readdirSync(tessDir).filter(f =>
-    f.startsWith('tesseract-core') || f.endsWith('.wasm')
-  );
+  // Copy tesseract-core WASM files from tesseract.js-core package (needed to avoid CDN calls
+  // blocked by site CSPs). Only copy the LSTM variants (used by OEM 1, the default).
+  const coreDir = path.join(ROOT, 'node_modules', 'tesseract.js-core');
+  const coreFiles = [
+    'tesseract-core-simd-lstm.wasm.js',
+    'tesseract-core-simd-lstm.wasm',
+    'tesseract-core-lstm.wasm.js',
+    'tesseract-core-lstm.wasm'
+  ];
 
   for (const file of coreFiles) {
-    const src = path.join(tessDir, file);
+    const src = path.join(coreDir, file);
     const dst = path.join(LIB, file);
+    if (!fs.existsSync(src)) {
+      console.warn(`⚠   Not found: ${file} (skipping)`);
+      continue;
+    }
     fs.copyFileSync(src, dst);
     const size = (fs.statSync(dst).size / 1024).toFixed(0);
     console.log(`✓  lib/${file} (${size} kB)`);

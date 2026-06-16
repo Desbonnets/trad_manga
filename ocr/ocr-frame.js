@@ -19,11 +19,13 @@ async function getWorker(lang, requestId) {
     throw new Error('Tesseract.js non chargé — vérifiez lib/tesseract.min.js (node scripts/setup.js)');
   }
 
-  const workerPath = chrome.runtime.getURL('lib/worker.min.js');
-
+  // workerBlobURL: false → Tesseract creates the Worker directly from the chrome-extension://
+  // URL instead of wrapping it in an intermediate Blob that can't importScripts across origins.
+  // This works because the OCR iframe is the same chrome-extension:// origin as the worker file.
   worker = await Tesseract.createWorker(lang, 1, {
-    workerPath,
-    // corePath omitted → Tesseract.js uses its built-in CDN URL for the WASM core
+    workerPath: chrome.runtime.getURL('lib/worker.min.js'),
+    workerBlobURL: false,
+    corePath: chrome.runtime.getURL('lib/'),
     langPath: 'https://tessdata.projectnaptha.com/4.0.0/',
     cacheMethod: 'write',
     logger: (m) => {
@@ -61,7 +63,19 @@ window.addEventListener('message', async (e) => {
     const w = await getWorker(lang || 'eng', id);
     const { data } = await w.recognize(processed);
     const blocks = extractBlocks(data);
-    e.source.postMessage({ type: 'MT_OCR_RESULT', id, blocks }, '*');
+
+    const debug = {
+      rawText: data.text?.trim().substring(0, 200) || '(vide)',
+      words: data.words?.length ?? 0,
+      lines: data.lines?.length ?? 0,
+      paragraphs: data.paragraphs?.length ?? 0,
+      blocksAfterFilter: blocks.length,
+      maxConfidence: data.words?.length
+        ? Math.max(...data.words.map(w => w.confidence)).toFixed(1)
+        : 'N/A'
+    };
+
+    e.source.postMessage({ type: 'MT_OCR_RESULT', id, blocks, debug }, '*');
   } catch (err) {
     e.source.postMessage({ type: 'MT_OCR_RESULT', id, error: err.message }, '*');
   }
