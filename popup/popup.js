@@ -12,7 +12,7 @@ document.getElementById('btn-toggle').addEventListener('click', () => {
 
 document.getElementById('btn-clear').addEventListener('click', () => {
   chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
-    if (tabs[0]) chrome.tabs.sendMessage(tabs[0].id, { action: 'clearTranslations' });
+    if (tabs[0]) chrome.tabs.sendMessage(tabs[0].id, { action: 'clearTranslations' }).catch(() => {});
   });
   window.close();
 });

@@ -5,6 +5,7 @@ node_modules/
 lib/tesseract.min.js
 lib/worker.min.js
 lib/*.wasm
+lib/*.wasm.js
 lib/*.js.map
 
 # web-ext build output

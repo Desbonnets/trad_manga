@@ -146,7 +146,7 @@ function notify(message, type = 'info') {
     'bottom:24px!important',
     'right:24px!important',
     'z-index:2147483647!important',
-    'padding:10px 14px',
+    'padding:10px 10px 10px 14px',
     'border-radius:8px',
     `background:${c.bg}`,
     `color:${c.color}`,
@@ -156,17 +156,45 @@ function notify(message, type = 'info') {
     'box-shadow:0 4px 16px rgba(0,0,0,0.35)',
     'max-width:340px',
     'word-break:break-word',
-    'pointer-events:none',
+    'pointer-events:auto',
     'opacity:1',
-    'transition:opacity 0.3s'
+    'transition:opacity 0.3s',
+    'display:flex!important',
+    'align-items:flex-start',
+    'gap:10px'
   ].join(';');
-  el.textContent = message;
+
+  const text = document.createElement('span');
+  text.style.cssText = 'flex:1';
+  text.textContent = message;
+
+  const btnClose = document.createElement('button');
+  btnClose.textContent = '×';
+  btnClose.style.cssText = [
+    'flex-shrink:0',
+    'background:none',
+    'border:none',
+    'cursor:pointer',
+    'font-size:16px',
+    'line-height:1',
+    'padding:0 2px',
+    'opacity:0.65',
+    `color:${c.color}`
+  ].join(';');
+  btnClose.addEventListener('mouseover', () => { btnClose.style.opacity = '1'; });
+  btnClose.addEventListener('mouseout',  () => { btnClose.style.opacity = '0.65'; });
+  btnClose.addEventListener('click', dismiss);
+
+  el.append(text, btnClose);
   (document.body || document.documentElement).appendChild(el);
 
-  setTimeout(() => {
+  const timer = setTimeout(dismiss, 10000);
+
+  function dismiss() {
+    clearTimeout(timer);
     el.style.opacity = '0';
     setTimeout(() => el.remove(), 300);
-  }, 3000);
+  }
 }
 
 // ─── OCR Frame ─────────────────────────────────────────────────────────────────
@@ -221,6 +249,7 @@ window.addEventListener('message', e => {
     const cb = state.ocrCallbacks.get(msg.id);
     if (!cb) return;
     state.ocrCallbacks.delete(msg.id);
+    if (msg.debug) console.log('[MT] OCR debug:', msg.debug);
     if (msg.error) cb.reject(new Error(msg.error));
     else cb.resolve(msg.blocks);
   }
@@ -282,15 +311,32 @@ async function getImageDataUrl(img) {
   await new Promise(r => setTimeout(r, 180)); // let the browser finish scrolling
 
   const rect = img.getBoundingClientRect();
-  if (rect.width === 0 || rect.height === 0) {
+
+  // Clip to the visible viewport — webtoon images are often thousands of pixels tall
+  // so rect.top is negative and rect.height >> viewport height after scrollIntoView.
+  // Passing unclipped values causes captureVisibleTab to crop outside the screenshot.
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const clippedRect = {
+    left:   Math.max(0, rect.left),
+    top:    Math.max(0, rect.top),
+    width:  Math.min(rect.right,  vw) - Math.max(0, rect.left),
+    height: Math.min(rect.bottom, vh) - Math.max(0, rect.top)
+  };
+
+  if (clippedRect.width <= 0 || clippedRect.height <= 0) {
     throw new Error("L'image n'est pas visible dans la fenêtre");
   }
 
+  console.log('[MT] capture rect:', JSON.stringify(clippedRect), '| img natural:', img.naturalWidth, '×', img.naturalHeight);
+
   const result = await chrome.runtime.sendMessage({
     action: 'captureImageRegion',
-    rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+    rect: clippedRect,
     dpr: window.devicePixelRatio || 1
   });
+
+  console.log('[MT] captureImageRegion →', result?.dataUrl ? `OK (${result.dataUrl.length} chars)` : `ERREUR: ${result?.error}`);
 
   if (result?.dataUrl) return result.dataUrl;
   throw new Error(result?.error || "Échec de la capture d'écran");
