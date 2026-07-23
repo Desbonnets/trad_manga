@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "setup": "node scripts/setup.js",
+    "test": "node --test test/*.test.js",
     "lint": "web-ext lint",
     "build:chrome": "web-ext build --overwrite-dest --ignore-files scripts node_modules package*.json",
     "build:firefox": "web-ext build --overwrite-dest --ignore-files scripts node_modules package*.json"

@@ -35,7 +35,8 @@ function defaultSettings() {
     fontSize: 14,
     opacity: 0.92,
     bgColor: '#0f0f1a',
-    textColor: '#e8e8f0'
+    textColor: '#e8e8f0',
+    deepScan: false
   };
 }
 
@@ -240,8 +241,10 @@ window.addEventListener('message', e => {
       'recognizing text': `Reconnaissance du texte… ${pct}%`
     };
     const text = labels[msg.status] || `OCR en cours… ${pct}%`;
+    // Deep-scan mode runs several rotation passes — prefix with which one is running.
+    const passPrefix = msg.pass ? `[Passe ${msg.pass.index}/${msg.pass.total}] ` : '';
     const subText = pct < 100 ? 'Patientez, le premier lancement télécharge les données OCR (~4 Mo)' : '';
-    activeLoader.update(text, msg.progress, subText);
+    activeLoader.update(passPrefix + text, msg.progress, subText);
     return;
   }
 
@@ -271,7 +274,7 @@ function waitForOCRReady(timeoutMs = 30000) {
   });
 }
 
-async function runOCR(imageData, lang, loader) {
+async function runOCR(imageData, lang, loader, deepScan) {
   initOCRFrame();
 
   if (loader) loader.update('Connexion au moteur OCR…', 0);
@@ -281,7 +284,7 @@ async function runOCR(imageData, lang, loader) {
   return new Promise((resolve, reject) => {
     state.ocrCallbacks.set(id, { resolve, reject });
     state.ocrFrame.contentWindow.postMessage(
-      { type: 'MT_OCR_REQUEST', id, imageData, lang },
+      { type: 'MT_OCR_REQUEST', id, imageData, lang, deepScan },
       '*'
     );
   });
@@ -289,7 +292,7 @@ async function runOCR(imageData, lang, loader) {
 
 // ─── Image helpers ─────────────────────────────────────────────────────────────
 
-async function getImageDataUrl(img) {
+async function getImageDataUrl(img, loader) {
   // Method 1: Direct canvas — works for same-origin or CORS-enabled images.
   try {
     const canvas = document.createElement('canvas');
@@ -304,42 +307,142 @@ async function getImageDataUrl(img) {
     // Fall through to Method 2
   }
 
-  // Method 2: Screenshot + crop via captureVisibleTab.
-  // The browser has already loaded and rendered the image — no network request needed,
-  // so hotlink protection (403 Referer check) is completely bypassed.
-  img.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
-  await new Promise(r => setTimeout(r, 180)); // let the browser finish scrolling
-
-  const rect = img.getBoundingClientRect();
-
-  // Clip to the visible viewport — webtoon images are often thousands of pixels tall
-  // so rect.top is negative and rect.height >> viewport height after scrollIntoView.
-  // Passing unclipped values causes captureVisibleTab to crop outside the screenshot.
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const clippedRect = {
-    left:   Math.max(0, rect.left),
-    top:    Math.max(0, rect.top),
-    width:  Math.min(rect.right,  vw) - Math.max(0, rect.left),
-    height: Math.min(rect.bottom, vh) - Math.max(0, rect.top)
-  };
-
-  if (clippedRect.width <= 0 || clippedRect.height <= 0) {
-    throw new Error("L'image n'est pas visible dans la fenêtre");
+  // Method 2: Background fetch — fast path for CDNs that don't use hotlink protection.
+  const src = img.currentSrc || img.src || '';
+  if (src.startsWith('http')) {
+    try {
+      const result = await chrome.runtime.sendMessage({
+        action: 'fetchImageAsDataUrl',
+        url: src,
+        referrer: window.location.href
+      });
+      if (result?.dataUrl) {
+        console.log('[MT] fetchImageAsDataUrl → OK (full image)');
+        return result.dataUrl;
+      }
+      console.warn('[MT] fetchImageAsDataUrl → échec:', result?.error);
+    } catch (e) {
+      console.warn('[MT] fetchImageAsDataUrl → exception:', e.message);
+    }
   }
 
-  console.log('[MT] capture rect:', JSON.stringify(clippedRect), '| img natural:', img.naturalWidth, '×', img.naturalHeight);
+  // Method 3: Scroll-and-stitch — scrolls through the full image and stitches viewport
+  // screenshots together. Works for all images regardless of hotlink protection or CORS.
+  return captureFullImageByScrolling(img, loader);
+}
 
-  const result = await chrome.runtime.sendMessage({
-    action: 'captureImageRegion',
-    rect: clippedRect,
-    dpr: window.devicePixelRatio || 1
+// Waits for the image to finish loading. Lazy-loaded <img> elements (loading="lazy",
+// or JS lazy-load libraries that swap `src` on scroll) can still be mid-load right
+// after scrollIntoView(), leaving naturalWidth/Height at 0 — which downstream sized
+// the stitch canvas to 0×0 and failed silently instead of a clear error.
+function ensureImageLoaded(img, timeoutMs = 5000) {
+  if (img.complete) return Promise.resolve();
+  return new Promise(resolve => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      img.removeEventListener('load', onDone);
+      img.removeEventListener('error', onDone);
+    };
+    const onDone = () => { cleanup(); resolve(); };
+    // Resolve rather than reject on timeout/error — the dimension check right
+    // after the call reports a precise error if the image truly has no size.
+    const timer = setTimeout(onDone, timeoutMs);
+    img.addEventListener('load', onDone);
+    img.addEventListener('error', onDone);
   });
+}
 
-  console.log('[MT] captureImageRegion →', result?.dataUrl ? `OK (${result.dataUrl.length} chars)` : `ERREUR: ${result?.error}`);
+async function captureFullImageByScrolling(img, loader) {
+  const savedY = window.scrollY;
+  const dpr   = window.devicePixelRatio || 1;
+  const vw    = window.innerWidth;
+  const vh    = window.innerHeight;
 
-  if (result?.dataUrl) return result.dataUrl;
-  throw new Error(result?.error || "Échec de la capture d'écran");
+  img.scrollIntoView({ behavior: 'instant', block: 'start' });
+  await new Promise(r => setTimeout(r, 200));
+  await ensureImageLoaded(img);
+
+  const firstRect = img.getBoundingClientRect();
+  const displayW  = firstRect.width;
+  const displayH  = firstRect.height;
+
+  if (displayW <= 0 || displayH <= 0) throw new Error("Image non visible");
+
+  const natW = img.naturalWidth  || displayW;
+  const natH = img.naturalHeight || displayH;
+  if (natW <= 0 || natH <= 0) throw new Error("Dimensions de l'image indisponibles");
+
+  // Single-capture path — image fits in the viewport.
+  if (displayH <= vh) {
+    const r = {
+      left:   Math.max(0, firstRect.left),
+      top:    Math.max(0, firstRect.top),
+      width:  Math.min(firstRect.right, vw) - Math.max(0, firstRect.left),
+      height: Math.min(firstRect.bottom, vh) - Math.max(0, firstRect.top)
+    };
+    const res = await chrome.runtime.sendMessage({ action: 'captureImageRegion', rect: r, dpr });
+    window.scrollTo(0, savedY);
+    if (res?.dataUrl) return res.dataUrl;
+    throw new Error(res?.error || "Échec de la capture");
+  }
+
+  // Multi-capture path — stitch at natural pixel dimensions without extra upscale.
+  const scaleY      = natH / displayH;
+  const totalChunks = Math.ceil(displayH / vh);
+  const canvas = document.createElement('canvas');
+  canvas.width  = natW;
+  canvas.height = natH;
+  const ctx = canvas.getContext('2d');
+
+  let chunkIndex  = 0;
+  let capturedNatH = 0;
+
+  while (capturedNatH < natH) {
+    const rect       = img.getBoundingClientRect();
+    const imgTopInVP = rect.top;
+    const visTop     = Math.max(0, imgTopInVP);
+    const visBottom  = Math.min(vh, imgTopInVP + displayH);
+    const visH       = visBottom - visTop;
+
+    if (visH <= 2) break;
+
+    loader?.update(
+      `Capture ${chunkIndex + 1}/${totalChunks}…`,
+      0.05 + 0.35 * (chunkIndex / totalChunks)
+    );
+
+    const res = await chrome.runtime.sendMessage({
+      action: 'captureImageRegion',
+      rect: { left: Math.max(0, rect.left), top: visTop, width: Math.min(rect.width, vw), height: visH },
+      dpr,
+      upscale: 1
+    });
+
+    if (!res?.dataUrl) break;
+
+    const imgDisplayYStart = Math.max(0, -imgTopInVP);
+    const destY = Math.round(imgDisplayYStart * scaleY);
+    const destH = Math.min(Math.round(visH * scaleY), natH - destY);
+
+    await new Promise((resolve, reject) => {
+      const chunk = new Image();
+      chunk.onload  = () => { ctx.drawImage(chunk, 0, destY, natW, destH); resolve(); };
+      chunk.onerror = () => reject(new Error('Erreur chargement chunk'));
+      chunk.src = res.dataUrl;
+    });
+
+    capturedNatH = destY + destH;
+    chunkIndex++;
+    if (capturedNatH >= natH) break;
+
+    window.scrollBy(0, Math.floor(visH * 0.95));
+    await new Promise(r => setTimeout(r, 150));
+  }
+
+  window.scrollTo(0, savedY);
+
+  if (capturedNatH === 0) throw new Error("Aucune capture réussie");
+  return canvas.toDataURL('image/png');
 }
 
 function findImageBySrc(srcUrl) {
@@ -354,38 +457,99 @@ function findImageBySrc(srcUrl) {
 // Multiple Lingva public instances — tried in order until one succeeds
 const LINGVA_INSTANCES = [
   'https://lingva.ml',
-  'https://lingva.gaais.me',
   'https://translate.plausibility.cloud'
 ];
 
-async function translate(text, settings) {
-  const { sourceLang, targetLang, translationApi, translationEndpoint, deepLKey } = settings;
-  if (!text.trim()) return text;
-  try {
-    switch (translationApi) {
-      case 'deepl':
-        if (deepLKey) return await translateDeepL(text, sourceLang, targetLang, deepLKey);
-        // No key → fall through to Lingva
-        // falls through
-      case 'lingva':
-      default:
-        try {
-          return await translateLingva(text, sourceLang, targetLang);
-        } catch {
-          // Lingva failed → fallback to MyMemory
-          return await translateMyMemory(text, sourceLang, targetLang);
-        }
-      case 'mymemory':
-        return await translateMyMemory(text, sourceLang, targetLang);
-      case 'libretranslate':
-        if (translationEndpoint) {
-          return await translateLibreTranslate(text, sourceLang, targetLang, translationEndpoint);
-        }
-        return await translateLingva(text, sourceLang, targetLang);
+// ─── Circuit breaker ─────────────────────────────────────────────────────────────
+// Once a service fails, skip it for PROVIDER_COOLDOWN_MS instead of retrying it on
+// every single block/image — without this, an outage (e.g. Lingva down) meant every
+// block of every image on a page re-attempted the same dead instances from scratch.
+const PROVIDER_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+const providerCooldowns = new Map(); // providerKey → timestamp (ms) until which it's skipped
+
+function isProviderCoolingDown(key) {
+  const until = providerCooldowns.get(key);
+  return until !== undefined && Date.now() < until;
+}
+
+function markProviderDown(key) {
+  providerCooldowns.set(key, Date.now() + PROVIDER_COOLDOWN_MS);
+}
+
+function markProviderUp(key) {
+  providerCooldowns.delete(key);
+}
+
+// ─── Translation provider chain ─────────────────────────────────────────────────
+// The user's chosen service is tried first; on failure we cascade through the
+// other configured services rather than silently giving up or returning the
+// untranslated text. We stop after MAX_PROVIDER_FAILURES services have failed
+// so a full outage surfaces as a clear error instead of retrying forever.
+const MAX_PROVIDER_FAILURES = 3;
+
+function buildProviderChain(settings) {
+  const { translationApi, translationEndpoint, deepLKey } = settings;
+
+  const providers = {
+    lingva: {
+      name: 'Lingva',
+      run: (text, src, tgt) => translateLingva(text, src, tgt)
+    },
+    mymemory: {
+      name: 'MyMemory',
+      run: (text, src, tgt) => translateMyMemory(text, src, tgt)
+    },
+    deepl: {
+      name: 'DeepL',
+      available: !!deepLKey,
+      run: (text, src, tgt) => translateDeepL(text, src, tgt, deepLKey)
+    },
+    libretranslate: {
+      name: 'LibreTranslate',
+      available: !!translationEndpoint,
+      run: (text, src, tgt) => translateLibreTranslate(text, src, tgt, translationEndpoint)
     }
-  } catch {
-    return text;
+  };
+
+  // Preferred provider first (if usable), then the others as fallback, in a fixed
+  // order — skipping ones that aren't configured (no DeepL key / no LibreTranslate endpoint).
+  const order = [translationApi, 'lingva', 'mymemory', 'deepl', 'libretranslate'];
+  const seen = new Set();
+  const usable = [];
+  for (const key of order) {
+    if (seen.has(key) || !providers[key]) continue;
+    seen.add(key);
+    if (providers[key].available === false) continue;
+    usable.push({ key, ...providers[key] });
   }
+
+  // Skip services still cooling down after a recent failure — unless that would
+  // leave nothing to try, in which case attempt them anyway (a possibly-recovered
+  // service is worth retrying rather than failing immediately with nothing tried).
+  const ready = usable.filter(p => !isProviderCoolingDown(p.key));
+  return ready.length > 0 ? ready : usable;
+}
+
+async function translate(text, settings) {
+  if (!text.trim()) return text;
+
+  const chain = buildProviderChain(settings);
+  const failures = [];
+
+  for (const provider of chain) {
+    if (failures.length >= MAX_PROVIDER_FAILURES) break;
+    try {
+      const result = await provider.run(text, settings.sourceLang, settings.targetLang);
+      markProviderUp(provider.key);
+      return result;
+    } catch (err) {
+      console.warn(`[MT] Service de traduction "${provider.name}" en échec :`, err.message);
+      markProviderDown(provider.key);
+      failures.push(`${provider.name} (${err.message})`);
+    }
+  }
+
+  throw new Error(`Tous les services de traduction disponibles ont échoué — ${failures.join(', ')}`);
 }
 
 // Lingva Translate — free, no key, community-hosted instances
@@ -457,51 +621,67 @@ async function translateLibreTranslate(text, src, tgt, endpoint) {
   return data.translatedText;
 }
 
-// ─── Overlay ───────────────────────────────────────────────────────────────────
+// ─── Modal de traduction ────────────────────────────────────────────────────────
 
-function createOverlay(block, translatedText, imageRect, imageEl) {
+// `groups`, if provided, is an array of { imageIndex, results } used to label
+// which source image each block came from (batch translation via translatePage).
+// Without it, `results` renders as a flat list (single-image translation).
+function showTranslationModal(results, groups) {
   const s = state.settings;
-  const scaleX = imageEl.offsetWidth / (imageEl.naturalWidth || imageEl.offsetWidth || 1);
-  const scaleY = imageEl.offsetHeight / (imageEl.naturalHeight || imageEl.offsetHeight || 1);
-
-  const x = imageRect.left + window.scrollX + block.bbox.x0 * scaleX;
-  const y = imageRect.top + window.scrollY + block.bbox.y0 * scaleY;
 
   const el = document.createElement('div');
-  el.className = 'mt-overlay';
-  el.style.cssText = `left:${x}px;top:${y}px;font-size:${s.fontSize}px;` +
+  el.className = 'mt-modal';
+  el.style.cssText = `font-size:${s.fontSize}px;` +
     `background:${hexToRgba(s.bgColor, s.opacity)};color:${s.textColor};`;
 
   const header = document.createElement('div');
-  header.className = 'mt-overlay-header';
+  header.className = 'mt-modal-header';
 
-  const btnMinimize = makeBtn('−', 'mt-btn', 'Réduire', () => {
-    const hidden = body.style.display === 'none';
-    body.style.display = hidden ? '' : 'none';
-    btnMinimize.textContent = hidden ? '−' : '+';
-  });
+  const title = document.createElement('span');
+  title.className = 'mt-modal-title';
+  title.textContent = groups
+    ? `Traduction — ${groups.length} image(s), ${results.length} bloc${results.length > 1 ? 's' : ''}`
+    : `Traduction — ${results.length} bloc${results.length > 1 ? 's' : ''}`;
 
   const btnClose = makeBtn('×', 'mt-btn', 'Fermer', () => {
     el.remove();
     state.overlays = state.overlays.filter(o => o !== el);
   });
 
-  header.append(btnMinimize, btnClose);
+  header.append(title, btnClose);
 
   const body = document.createElement('div');
-  body.className = 'mt-overlay-body';
+  body.className = 'mt-modal-body';
 
-  const origEl = document.createElement('p');
-  origEl.className = 'mt-original';
-  origEl.textContent = block.text;
+  const appendBlock = ({ original, translated }) => {
+    const block = document.createElement('div');
+    block.className = 'mt-block';
 
-  const transEl = document.createElement('p');
-  transEl.className = 'mt-translated';
-  transEl.textContent = translatedText;
+    const origEl = document.createElement('p');
+    origEl.className = 'mt-original';
+    origEl.textContent = original;
 
-  body.append(origEl, transEl);
+    const transEl = document.createElement('p');
+    transEl.className = 'mt-translated';
+    transEl.textContent = translated;
+
+    block.append(origEl, transEl);
+    body.appendChild(block);
+  };
+
+  if (groups) {
+    for (const group of groups) {
+      const groupTitle = document.createElement('div');
+      groupTitle.className = 'mt-group-title';
+      groupTitle.textContent = `Image ${group.imageIndex}`;
+      body.appendChild(groupTitle);
+      group.results.forEach(appendBlock);
+    }
+  } else {
+    results.forEach(appendBlock);
+  }
+
   el.append(header, body);
-
   makeDraggable(el, header);
   document.body.appendChild(el);
   state.overlays.push(el);
@@ -523,8 +703,14 @@ function makeDraggable(el, handle) {
     if (e.target.classList.contains('mt-btn')) return;
     e.preventDefault();
     ox = e.clientX; oy = e.clientY;
-    ol = parseInt(el.style.left) || 0;
-    ot = parseInt(el.style.top) || 0;
+    // Resolve the current viewport position (works whether the modal is
+    // centered via CSS transform or already placed via left/top from a prior drag).
+    const r = el.getBoundingClientRect();
+    ol = r.left; ot = r.top;
+    // Drop the centering transform so left/top take full control.
+    el.style.transform = 'none';
+    el.style.left = `${ol}px`;
+    el.style.top = `${ot}px`;
     el.classList.add('mt-dragging');
     const move = e => {
       el.style.left = `${ol + e.clientX - ox}px`;
@@ -550,6 +736,46 @@ function hexToRgba(hex, alpha) {
 
 // ─── Main actions ──────────────────────────────────────────────────────────────
 
+// Runs OCR + translation for a single image against an existing loader and
+// returns the translated blocks. Throws on hard failure (unreadable image, OCR
+// error); returns [] when the image is read fine but no text is detected.
+// Shared by translateImage (single image) and translatePage (batch) so a batch
+// run uses one loader and one result set instead of one modal per image.
+async function runOCRTranslatePipeline(imageEl, loader) {
+  let dataUrl;
+  try {
+    dataUrl = await getImageDataUrl(imageEl, loader);
+  } catch (err) {
+    throw new Error(`Impossible de lire l'image : ${err.message}`);
+  }
+
+  loader.update('Connexion au moteur OCR…', 0.02);
+
+  let blocks;
+  try {
+    blocks = await runOCR(dataUrl, state.settings.ocrLang, loader, state.settings.deepScan);
+  } catch (err) {
+    throw new Error(`Erreur OCR : ${err.message}`);
+  }
+
+  if (!blocks || blocks.length === 0) return [];
+
+  loader.update(`${blocks.length} bloc(s) trouvé(s) — traduction…`, 1, '');
+
+  const results = [];
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    loader.update(
+      `Traduction ${i + 1} / ${blocks.length}…`,
+      1,
+      block.text.slice(0, 50) + (block.text.length > 50 ? '…' : '')
+    );
+    const translated = await translate(block.text, state.settings);
+    results.push({ original: block.text, translated });
+  }
+  return results;
+}
+
 async function translateImage(imageEl) {
   if (!imageEl) {
     notify("Aucune image sélectionnée — survolez l'image avant de cliquer", 'error');
@@ -561,63 +787,76 @@ async function translateImage(imageEl) {
   const loader = createLoader();
   loader.update('Lecture de l\'image…', 0);
 
-  let dataUrl;
+  let results;
   try {
-    dataUrl = await getImageDataUrl(imageEl);
+    results = await runOCRTranslatePipeline(imageEl, loader);
   } catch (err) {
     loader.remove();
-    notify(`Impossible de lire l'image : ${err.message}`, 'error');
+    notify(err.message, 'error');
     return;
   }
 
-  loader.update('Connexion au moteur OCR…', 0.02);
+  loader.remove();
 
-  let blocks;
-  try {
-    blocks = await runOCR(dataUrl, state.settings.ocrLang, loader);
-  } catch (err) {
-    loader.remove();
-    notify(`Erreur OCR : ${err.message}`, 'error');
-    return;
-  }
-
-  if (!blocks || blocks.length === 0) {
-    loader.remove();
+  if (results.length === 0) {
     notify("Aucun texte détecté dans l'image", 'warning');
     return;
   }
 
-  loader.update(`${blocks.length} bloc(s) trouvé(s) — traduction…`, 1, '');
-  const rect = imageEl.getBoundingClientRect();
-
-  for (let i = 0; i < blocks.length; i++) {
-    const block = blocks[i];
-    loader.update(
-      `Traduction ${i + 1} / ${blocks.length}…`,
-      1,
-      block.text.slice(0, 50) + (block.text.length > 50 ? '…' : '')
-    );
-    const translated = await translate(block.text, state.settings);
-    createOverlay(block, translated, rect, imageEl);
-  }
-
-  loader.remove();
-  notify(`Traduction terminée — ${blocks.length} bloc(s)`, 'success');
+  showTranslationModal(results);
+  notify(`Traduction terminée — ${results.length} bloc(s)`, 'success');
 }
 
 async function translatePage() {
   await loadSettings();
-  const images = Array.from(document.querySelectorAll('img')).filter(
-    img => img.offsetWidth >= 100 && img.offsetHeight >= 100 && !img.closest('.mt-overlay')
-  );
+
+  // Deduplicate by resolved src — webtoon pages often have the same <img> several
+  // times in the DOM (lazy-load placeholders, hidden clones, srcset duplicates).
+  const seen = new Set();
+  const images = Array.from(document.querySelectorAll('img')).filter(img => {
+    if (img.offsetWidth < 100 || img.offsetHeight < 100) return false;
+    if (img.closest('.mt-modal')) return false;
+    const src = img.currentSrc || img.src || '';
+    if (!src || seen.has(src)) return false;
+    seen.add(src);
+    return true;
+  });
 
   if (images.length === 0) {
     notify('Aucune image de taille suffisante trouvée', 'warning');
     return;
   }
 
-  notify(`Traduction de ${images.length} image(s) en cours…`, 'info');
-  for (const img of images) await translateImage(img);
+  // One shared loader and one combined modal for the whole batch — translating
+  // each image via translateImage() used to pop a separate centered modal per
+  // image, stacking them on top of each other for multi-image pages.
+  const loader = createLoader();
+  const groups = [];
+  let failCount = 0;
+
+  for (let i = 0; i < images.length; i++) {
+    loader.update(`Image ${i + 1} / ${images.length}…`, 0, '');
+    try {
+      const results = await runOCRTranslatePipeline(images[i], loader);
+      if (results.length > 0) groups.push({ imageIndex: i + 1, results });
+    } catch (err) {
+      failCount++;
+      console.warn(`[MT] Image ${i + 1}/${images.length} échouée :`, err.message);
+    }
+  }
+
+  loader.remove();
+
+  if (groups.length === 0) {
+    notify("Aucun texte détecté dans les images de la page", 'warning');
+    return;
+  }
+
+  const blockCount = groups.reduce((n, g) => n + g.results.length, 0);
+  showTranslationModal(groups.flatMap(g => g.results), groups.length > 1 ? groups : undefined);
+
+  const failSuffix = failCount > 0 ? ` — ${failCount} image(s) en échec` : '';
+  notify(`Traduction terminée — ${blockCount} bloc(s) sur ${groups.length} image(s)${failSuffix}`, 'success');
 }
 
 function toggleTranslations() {
@@ -664,3 +903,18 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
   }
 });
+
+// Node-only export for unit tests (node:test) — no-op in the browser/content-script context.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    buildProviderChain,
+    translate,
+    hexToRgba,
+    defaultSettings,
+    MAX_PROVIDER_FAILURES,
+    PROVIDER_COOLDOWN_MS,
+    isProviderCoolingDown,
+    // Test-only: clears circuit-breaker state so tests don't leak cooldowns into each other.
+    __resetProviderCooldownsForTests: () => providerCooldowns.clear()
+  };
+}
