@@ -30,7 +30,8 @@ function defaultSettings() {
     opacity: 0.92,
     bgColor: '#0f0f1a',
     textColor: '#e8e8f0',
-    displayMode: 'floating'
+    displayMode: 'floating',
+    deepScan: false
   };
 }
 

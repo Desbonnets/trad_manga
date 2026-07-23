@@ -28,6 +28,18 @@
             <option value="fra">Français (fra)</option>
           </select>
         </div>
+
+        <div class="field">
+          <label>
+            <input type="checkbox" id="deep-scan" name="deepScan">
+            Analyse approfondie (texte incliné)
+          </label>
+          <p class="field-hint">
+            Relance l'OCR sur l'image pivotée (±25°) pour détecter les panneaux et bulles
+            inclinés que Tesseract rate habituellement, puis fusionne les résultats.
+            2 à 3× plus lent — à activer au cas par cas si du texte est manquant.
+          </p>
+        </div>
       </section>
 
       <!-- ── Translation ── -->

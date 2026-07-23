@@ -10,7 +10,8 @@ const DEFAULTS = {
   fontSize: 14,
   opacity: 0.92,
   bgColor: '#0f0f1a',
-  textColor: '#e8e8f0'
+  textColor: '#e8e8f0',
+  deepScan: false
 };
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -19,6 +20,7 @@ const $ = id => document.getElementById(id);
 
 function applyToForm(settings) {
   $('ocr-lang').value        = settings.ocrLang;
+  $('deep-scan').checked     = !!settings.deepScan;
   $('source-lang').value     = settings.sourceLang;
   $('target-lang').value     = settings.targetLang;
   $('translation-api').value = settings.translationApi;
@@ -41,6 +43,7 @@ function applyToForm(settings) {
 function readFromForm() {
   return {
     ocrLang:            $('ocr-lang').value,
+    deepScan:           $('deep-scan').checked,
     sourceLang:         $('source-lang').value,
     targetLang:         $('target-lang').value,
     translationApi:     $('translation-api').value,

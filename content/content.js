@@ -35,7 +35,8 @@ function defaultSettings() {
     fontSize: 14,
     opacity: 0.92,
     bgColor: '#0f0f1a',
-    textColor: '#e8e8f0'
+    textColor: '#e8e8f0',
+    deepScan: false
   };
 }
 
@@ -240,8 +241,10 @@ window.addEventListener('message', e => {
       'recognizing text': `Reconnaissance du texte… ${pct}%`
     };
     const text = labels[msg.status] || `OCR en cours… ${pct}%`;
+    // Deep-scan mode runs several rotation passes — prefix with which one is running.
+    const passPrefix = msg.pass ? `[Passe ${msg.pass.index}/${msg.pass.total}] ` : '';
     const subText = pct < 100 ? 'Patientez, le premier lancement télécharge les données OCR (~4 Mo)' : '';
-    activeLoader.update(text, msg.progress, subText);
+    activeLoader.update(passPrefix + text, msg.progress, subText);
     return;
   }
 
@@ -271,7 +274,7 @@ function waitForOCRReady(timeoutMs = 30000) {
   });
 }
 
-async function runOCR(imageData, lang, loader) {
+async function runOCR(imageData, lang, loader, deepScan) {
   initOCRFrame();
 
   if (loader) loader.update('Connexion au moteur OCR…', 0);
@@ -281,7 +284,7 @@ async function runOCR(imageData, lang, loader) {
   return new Promise((resolve, reject) => {
     state.ocrCallbacks.set(id, { resolve, reject });
     state.ocrFrame.contentWindow.postMessage(
-      { type: 'MT_OCR_REQUEST', id, imageData, lang },
+      { type: 'MT_OCR_REQUEST', id, imageData, lang, deepScan },
       '*'
     );
   });
