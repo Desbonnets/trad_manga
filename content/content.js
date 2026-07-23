@@ -454,38 +454,99 @@ function findImageBySrc(srcUrl) {
 // Multiple Lingva public instances — tried in order until one succeeds
 const LINGVA_INSTANCES = [
   'https://lingva.ml',
-  'https://lingva.gaais.me',
   'https://translate.plausibility.cloud'
 ];
 
-async function translate(text, settings) {
-  const { sourceLang, targetLang, translationApi, translationEndpoint, deepLKey } = settings;
-  if (!text.trim()) return text;
-  try {
-    switch (translationApi) {
-      case 'deepl':
-        if (deepLKey) return await translateDeepL(text, sourceLang, targetLang, deepLKey);
-        // No key → fall through to Lingva
-        // falls through
-      case 'lingva':
-      default:
-        try {
-          return await translateLingva(text, sourceLang, targetLang);
-        } catch {
-          // Lingva failed → fallback to MyMemory
-          return await translateMyMemory(text, sourceLang, targetLang);
-        }
-      case 'mymemory':
-        return await translateMyMemory(text, sourceLang, targetLang);
-      case 'libretranslate':
-        if (translationEndpoint) {
-          return await translateLibreTranslate(text, sourceLang, targetLang, translationEndpoint);
-        }
-        return await translateLingva(text, sourceLang, targetLang);
+// ─── Circuit breaker ─────────────────────────────────────────────────────────────
+// Once a service fails, skip it for PROVIDER_COOLDOWN_MS instead of retrying it on
+// every single block/image — without this, an outage (e.g. Lingva down) meant every
+// block of every image on a page re-attempted the same dead instances from scratch.
+const PROVIDER_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+const providerCooldowns = new Map(); // providerKey → timestamp (ms) until which it's skipped
+
+function isProviderCoolingDown(key) {
+  const until = providerCooldowns.get(key);
+  return until !== undefined && Date.now() < until;
+}
+
+function markProviderDown(key) {
+  providerCooldowns.set(key, Date.now() + PROVIDER_COOLDOWN_MS);
+}
+
+function markProviderUp(key) {
+  providerCooldowns.delete(key);
+}
+
+// ─── Translation provider chain ─────────────────────────────────────────────────
+// The user's chosen service is tried first; on failure we cascade through the
+// other configured services rather than silently giving up or returning the
+// untranslated text. We stop after MAX_PROVIDER_FAILURES services have failed
+// so a full outage surfaces as a clear error instead of retrying forever.
+const MAX_PROVIDER_FAILURES = 3;
+
+function buildProviderChain(settings) {
+  const { translationApi, translationEndpoint, deepLKey } = settings;
+
+  const providers = {
+    lingva: {
+      name: 'Lingva',
+      run: (text, src, tgt) => translateLingva(text, src, tgt)
+    },
+    mymemory: {
+      name: 'MyMemory',
+      run: (text, src, tgt) => translateMyMemory(text, src, tgt)
+    },
+    deepl: {
+      name: 'DeepL',
+      available: !!deepLKey,
+      run: (text, src, tgt) => translateDeepL(text, src, tgt, deepLKey)
+    },
+    libretranslate: {
+      name: 'LibreTranslate',
+      available: !!translationEndpoint,
+      run: (text, src, tgt) => translateLibreTranslate(text, src, tgt, translationEndpoint)
     }
-  } catch {
-    return text;
+  };
+
+  // Preferred provider first (if usable), then the others as fallback, in a fixed
+  // order — skipping ones that aren't configured (no DeepL key / no LibreTranslate endpoint).
+  const order = [translationApi, 'lingva', 'mymemory', 'deepl', 'libretranslate'];
+  const seen = new Set();
+  const usable = [];
+  for (const key of order) {
+    if (seen.has(key) || !providers[key]) continue;
+    seen.add(key);
+    if (providers[key].available === false) continue;
+    usable.push({ key, ...providers[key] });
   }
+
+  // Skip services still cooling down after a recent failure — unless that would
+  // leave nothing to try, in which case attempt them anyway (a possibly-recovered
+  // service is worth retrying rather than failing immediately with nothing tried).
+  const ready = usable.filter(p => !isProviderCoolingDown(p.key));
+  return ready.length > 0 ? ready : usable;
+}
+
+async function translate(text, settings) {
+  if (!text.trim()) return text;
+
+  const chain = buildProviderChain(settings);
+  const failures = [];
+
+  for (const provider of chain) {
+    if (failures.length >= MAX_PROVIDER_FAILURES) break;
+    try {
+      const result = await provider.run(text, settings.sourceLang, settings.targetLang);
+      markProviderUp(provider.key);
+      return result;
+    } catch (err) {
+      console.warn(`[MT] Service de traduction "${provider.name}" en échec :`, err.message);
+      markProviderDown(provider.key);
+      failures.push(`${provider.name} (${err.message})`);
+    }
+  }
+
+  throw new Error(`Tous les services de traduction disponibles ont échoué — ${failures.join(', ')}`);
 }
 
 // Lingva Translate — free, no key, community-hosted instances
