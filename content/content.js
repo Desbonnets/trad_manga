@@ -289,7 +289,7 @@ async function runOCR(imageData, lang, loader) {
 
 // ─── Image helpers ─────────────────────────────────────────────────────────────
 
-async function getImageDataUrl(img) {
+async function getImageDataUrl(img, loader) {
   // Method 1: Direct canvas — works for same-origin or CORS-enabled images.
   try {
     const canvas = document.createElement('canvas');
@@ -304,42 +304,142 @@ async function getImageDataUrl(img) {
     // Fall through to Method 2
   }
 
-  // Method 2: Screenshot + crop via captureVisibleTab.
-  // The browser has already loaded and rendered the image — no network request needed,
-  // so hotlink protection (403 Referer check) is completely bypassed.
-  img.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
-  await new Promise(r => setTimeout(r, 180)); // let the browser finish scrolling
-
-  const rect = img.getBoundingClientRect();
-
-  // Clip to the visible viewport — webtoon images are often thousands of pixels tall
-  // so rect.top is negative and rect.height >> viewport height after scrollIntoView.
-  // Passing unclipped values causes captureVisibleTab to crop outside the screenshot.
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const clippedRect = {
-    left:   Math.max(0, rect.left),
-    top:    Math.max(0, rect.top),
-    width:  Math.min(rect.right,  vw) - Math.max(0, rect.left),
-    height: Math.min(rect.bottom, vh) - Math.max(0, rect.top)
-  };
-
-  if (clippedRect.width <= 0 || clippedRect.height <= 0) {
-    throw new Error("L'image n'est pas visible dans la fenêtre");
+  // Method 2: Background fetch — fast path for CDNs that don't use hotlink protection.
+  const src = img.currentSrc || img.src || '';
+  if (src.startsWith('http')) {
+    try {
+      const result = await chrome.runtime.sendMessage({
+        action: 'fetchImageAsDataUrl',
+        url: src,
+        referrer: window.location.href
+      });
+      if (result?.dataUrl) {
+        console.log('[MT] fetchImageAsDataUrl → OK (full image)');
+        return result.dataUrl;
+      }
+      console.warn('[MT] fetchImageAsDataUrl → échec:', result?.error);
+    } catch (e) {
+      console.warn('[MT] fetchImageAsDataUrl → exception:', e.message);
+    }
   }
 
-  console.log('[MT] capture rect:', JSON.stringify(clippedRect), '| img natural:', img.naturalWidth, '×', img.naturalHeight);
+  // Method 3: Scroll-and-stitch — scrolls through the full image and stitches viewport
+  // screenshots together. Works for all images regardless of hotlink protection or CORS.
+  return captureFullImageByScrolling(img, loader);
+}
 
-  const result = await chrome.runtime.sendMessage({
-    action: 'captureImageRegion',
-    rect: clippedRect,
-    dpr: window.devicePixelRatio || 1
+// Waits for the image to finish loading. Lazy-loaded <img> elements (loading="lazy",
+// or JS lazy-load libraries that swap `src` on scroll) can still be mid-load right
+// after scrollIntoView(), leaving naturalWidth/Height at 0 — which downstream sized
+// the stitch canvas to 0×0 and failed silently instead of a clear error.
+function ensureImageLoaded(img, timeoutMs = 5000) {
+  if (img.complete) return Promise.resolve();
+  return new Promise(resolve => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      img.removeEventListener('load', onDone);
+      img.removeEventListener('error', onDone);
+    };
+    const onDone = () => { cleanup(); resolve(); };
+    // Resolve rather than reject on timeout/error — the dimension check right
+    // after the call reports a precise error if the image truly has no size.
+    const timer = setTimeout(onDone, timeoutMs);
+    img.addEventListener('load', onDone);
+    img.addEventListener('error', onDone);
   });
+}
 
-  console.log('[MT] captureImageRegion →', result?.dataUrl ? `OK (${result.dataUrl.length} chars)` : `ERREUR: ${result?.error}`);
+async function captureFullImageByScrolling(img, loader) {
+  const savedY = window.scrollY;
+  const dpr   = window.devicePixelRatio || 1;
+  const vw    = window.innerWidth;
+  const vh    = window.innerHeight;
 
-  if (result?.dataUrl) return result.dataUrl;
-  throw new Error(result?.error || "Échec de la capture d'écran");
+  img.scrollIntoView({ behavior: 'instant', block: 'start' });
+  await new Promise(r => setTimeout(r, 200));
+  await ensureImageLoaded(img);
+
+  const firstRect = img.getBoundingClientRect();
+  const displayW  = firstRect.width;
+  const displayH  = firstRect.height;
+
+  if (displayW <= 0 || displayH <= 0) throw new Error("Image non visible");
+
+  const natW = img.naturalWidth  || displayW;
+  const natH = img.naturalHeight || displayH;
+  if (natW <= 0 || natH <= 0) throw new Error("Dimensions de l'image indisponibles");
+
+  // Single-capture path — image fits in the viewport.
+  if (displayH <= vh) {
+    const r = {
+      left:   Math.max(0, firstRect.left),
+      top:    Math.max(0, firstRect.top),
+      width:  Math.min(firstRect.right, vw) - Math.max(0, firstRect.left),
+      height: Math.min(firstRect.bottom, vh) - Math.max(0, firstRect.top)
+    };
+    const res = await chrome.runtime.sendMessage({ action: 'captureImageRegion', rect: r, dpr });
+    window.scrollTo(0, savedY);
+    if (res?.dataUrl) return res.dataUrl;
+    throw new Error(res?.error || "Échec de la capture");
+  }
+
+  // Multi-capture path — stitch at natural pixel dimensions without extra upscale.
+  const scaleY      = natH / displayH;
+  const totalChunks = Math.ceil(displayH / vh);
+  const canvas = document.createElement('canvas');
+  canvas.width  = natW;
+  canvas.height = natH;
+  const ctx = canvas.getContext('2d');
+
+  let chunkIndex  = 0;
+  let capturedNatH = 0;
+
+  while (capturedNatH < natH) {
+    const rect       = img.getBoundingClientRect();
+    const imgTopInVP = rect.top;
+    const visTop     = Math.max(0, imgTopInVP);
+    const visBottom  = Math.min(vh, imgTopInVP + displayH);
+    const visH       = visBottom - visTop;
+
+    if (visH <= 2) break;
+
+    loader?.update(
+      `Capture ${chunkIndex + 1}/${totalChunks}…`,
+      0.05 + 0.35 * (chunkIndex / totalChunks)
+    );
+
+    const res = await chrome.runtime.sendMessage({
+      action: 'captureImageRegion',
+      rect: { left: Math.max(0, rect.left), top: visTop, width: Math.min(rect.width, vw), height: visH },
+      dpr,
+      upscale: 1
+    });
+
+    if (!res?.dataUrl) break;
+
+    const imgDisplayYStart = Math.max(0, -imgTopInVP);
+    const destY = Math.round(imgDisplayYStart * scaleY);
+    const destH = Math.min(Math.round(visH * scaleY), natH - destY);
+
+    await new Promise((resolve, reject) => {
+      const chunk = new Image();
+      chunk.onload  = () => { ctx.drawImage(chunk, 0, destY, natW, destH); resolve(); };
+      chunk.onerror = () => reject(new Error('Erreur chargement chunk'));
+      chunk.src = res.dataUrl;
+    });
+
+    capturedNatH = destY + destH;
+    chunkIndex++;
+    if (capturedNatH >= natH) break;
+
+    window.scrollBy(0, Math.floor(visH * 0.95));
+    await new Promise(r => setTimeout(r, 150));
+  }
+
+  window.scrollTo(0, savedY);
+
+  if (capturedNatH === 0) throw new Error("Aucune capture réussie");
+  return canvas.toDataURL('image/png');
 }
 
 function findImageBySrc(srcUrl) {
@@ -523,8 +623,14 @@ function makeDraggable(el, handle) {
     if (e.target.classList.contains('mt-btn')) return;
     e.preventDefault();
     ox = e.clientX; oy = e.clientY;
-    ol = parseInt(el.style.left) || 0;
-    ot = parseInt(el.style.top) || 0;
+    // Resolve the current viewport position (works whether the modal is
+    // centered via CSS transform or already placed via left/top from a prior drag).
+    const r = el.getBoundingClientRect();
+    ol = r.left; ot = r.top;
+    // Drop the centering transform so left/top take full control.
+    el.style.transform = 'none';
+    el.style.left = `${ol}px`;
+    el.style.top = `${ot}px`;
     el.classList.add('mt-dragging');
     const move = e => {
       el.style.left = `${ol + e.clientX - ox}px`;

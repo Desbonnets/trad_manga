@@ -62,9 +62,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       forwardToActiveTab(msg);
       break;
 
+    // Content script: fetch full image via service worker (no CORS restriction)
+    case 'fetchImageAsDataUrl':
+      fetchImageAsDataUrl(msg.url, msg.referrer)
+        .then(sendResponse)
+        .catch(err => sendResponse({ error: err.message }));
+      return true; // async
+
     // Content script: screenshot + crop (bypasses hotlink protection)
     case 'captureImageRegion':
-      captureImageRegion(sender.tab, msg.rect, msg.dpr)
+      captureImageRegion(sender.tab, msg.rect, msg.dpr, msg.upscale)
         .then(sendResponse)
         .catch(err => sendResponse({ error: err.message }));
       return true; // async
@@ -90,10 +97,30 @@ function forwardToActiveTab(msg) {
   });
 }
 
+// Fetch a remote image as a base64 data URL.
+// The service worker has <all_urls> permission — no CORS restriction,
+// so it can download any image at its original full resolution.
+async function fetchImageAsDataUrl(url, referrer) {
+  const res = await fetch(url, {
+    credentials: 'omit',
+    referrer: referrer || '',
+    referrerPolicy: 'strict-origin-when-cross-origin'
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} — ${url.slice(0, 80)}`);
+  const blob = await res.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ dataUrl: reader.result });
+    reader.onerror = () => reject(new Error('FileReader error'));
+    reader.readAsDataURL(blob);
+  });
+}
+
 // Capture a region of the currently visible tab as a PNG data URL.
 // Uses captureVisibleTab so the image is read from the browser's rendered frame —
 // no network request is made, which completely bypasses hotlink protection (403).
-async function captureImageRegion(tab, rect, dpr) {
+async function captureImageRegion(tab, rect, dpr, upscale) {
+  upscale = upscale ?? 2; // default 2× for single captures; pass 1 for scroll-and-stitch
   const windowId = tab?.windowId ?? chrome.windows.WINDOW_ID_CURRENT;
 
   const screenshotDataUrl = await chrome.tabs.captureVisibleTab(windowId, {
@@ -119,14 +146,23 @@ async function captureImageRegion(tab, rect, dpr) {
     0, 0, cropW, cropH
   );
 
-  // Upscale 2× — screenshot resolution is often too low for Tesseract to detect
+  if (upscale <= 1) {
+    const croppedBlob = await cropCanvas.convertToBlob({ type: 'image/png' });
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({ dataUrl: reader.result });
+      reader.onerror = () => reject(new Error('FileReader error'));
+      reader.readAsDataURL(croppedBlob);
+    });
+  }
+
+  // Upscale — screenshot resolution is often too low for Tesseract to detect
   // small manga speech-bubble text reliably.
-  const UPSCALE = 2;
-  const canvas = new OffscreenCanvas(cropW * UPSCALE, cropH * UPSCALE);
+  const canvas = new OffscreenCanvas(cropW * upscale, cropH * upscale);
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(cropCanvas, 0, 0, cropW * UPSCALE, cropH * UPSCALE);
+  ctx.drawImage(cropCanvas, 0, 0, cropW * upscale, cropH * upscale);
 
   const croppedBlob = await canvas.convertToBlob({ type: 'image/png' });
 

@@ -13,38 +13,52 @@ async function getWorker(lang, requestId) {
   if (worker) {
     await worker.terminate();
     worker = null;
+    workerLang = null;
   }
 
   if (typeof Tesseract === 'undefined') {
     throw new Error('Tesseract.js non chargé — vérifiez lib/tesseract.min.js (node scripts/setup.js)');
   }
 
-  // workerBlobURL: false → Tesseract creates the Worker directly from the chrome-extension://
-  // URL instead of wrapping it in an intermediate Blob that can't importScripts across origins.
-  // This works because the OCR iframe is the same chrome-extension:// origin as the worker file.
-  worker = await Tesseract.createWorker(lang, 1, {
-    workerPath: chrome.runtime.getURL('lib/worker.min.js'),
-    workerBlobURL: false,
-    corePath: chrome.runtime.getURL('lib/'),
-    langPath: 'https://tessdata.projectnaptha.com/4.0.0/',
-    cacheMethod: 'write',
-    logger: (m) => {
-      if (m.status && m.progress !== undefined) {
-        window.parent.postMessage({
-          type: 'MT_OCR_PROGRESS',
-          requestId,
-          status: m.status,
-          progress: m.progress
-        }, '*');
+  // Built in a local variable and only committed to the module-level `worker` /
+  // `workerLang` once fully configured. If createWorker or setParameters throws
+  // partway, module state stays null instead of pointing at a half-initialized
+  // worker that a later call could mistake for ready (or leaking it unterminated).
+  let newWorker;
+  try {
+    // workerBlobURL: false → Tesseract creates the Worker directly from the chrome-extension://
+    // URL instead of wrapping it in an intermediate Blob that can't importScripts across origins.
+    // This works because the OCR iframe is the same chrome-extension:// origin as the worker file.
+    newWorker = await Tesseract.createWorker(lang, 1, {
+      workerPath: chrome.runtime.getURL('lib/worker.min.js'),
+      workerBlobURL: false,
+      corePath: chrome.runtime.getURL('lib/'),
+      langPath: 'https://tessdata.projectnaptha.com/4.0.0/',
+      cacheMethod: 'write',
+      logger: (m) => {
+        if (m.status && m.progress !== undefined) {
+          window.parent.postMessage({
+            type: 'MT_OCR_PROGRESS',
+            requestId,
+            status: m.status,
+            progress: m.progress
+          }, '*');
+        }
       }
-    }
-  });
+    });
 
-  // PSM 11 = Sparse text: find as much text as possible in no particular order.
-  // Much better than the default (PSM 3) for manga where text is scattered
-  // across isolated speech bubbles rather than laid out in continuous blocks.
-  await worker.setParameters({ tessedit_pageseg_mode: '11' });
+    // PSM 11 = Sparse text: find as much text as possible in no particular order.
+    // Much better than the default (PSM 3) for manga where text is scattered
+    // across isolated speech bubbles rather than laid out in continuous blocks.
+    // user_defined_dpi: bypass Tesseract's auto-estimation (can guess 500+ DPI on
+    // screenshots and crash the WASM core). 70 = standard web screen resolution.
+    await newWorker.setParameters({ tessedit_pageseg_mode: '11', user_defined_dpi: '70' });
+  } catch (err) {
+    if (newWorker) await newWorker.terminate().catch(() => {});
+    throw err;
+  }
 
+  worker = newWorker;
   workerLang = lang;
   return worker;
 }
