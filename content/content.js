@@ -557,51 +557,67 @@ async function translateLibreTranslate(text, src, tgt, endpoint) {
   return data.translatedText;
 }
 
-// ─── Overlay ───────────────────────────────────────────────────────────────────
+// ─── Modal de traduction ────────────────────────────────────────────────────────
 
-function createOverlay(block, translatedText, imageRect, imageEl) {
+// `groups`, if provided, is an array of { imageIndex, results } used to label
+// which source image each block came from (batch translation via translatePage).
+// Without it, `results` renders as a flat list (single-image translation).
+function showTranslationModal(results, groups) {
   const s = state.settings;
-  const scaleX = imageEl.offsetWidth / (imageEl.naturalWidth || imageEl.offsetWidth || 1);
-  const scaleY = imageEl.offsetHeight / (imageEl.naturalHeight || imageEl.offsetHeight || 1);
-
-  const x = imageRect.left + window.scrollX + block.bbox.x0 * scaleX;
-  const y = imageRect.top + window.scrollY + block.bbox.y0 * scaleY;
 
   const el = document.createElement('div');
-  el.className = 'mt-overlay';
-  el.style.cssText = `left:${x}px;top:${y}px;font-size:${s.fontSize}px;` +
+  el.className = 'mt-modal';
+  el.style.cssText = `font-size:${s.fontSize}px;` +
     `background:${hexToRgba(s.bgColor, s.opacity)};color:${s.textColor};`;
 
   const header = document.createElement('div');
-  header.className = 'mt-overlay-header';
+  header.className = 'mt-modal-header';
 
-  const btnMinimize = makeBtn('−', 'mt-btn', 'Réduire', () => {
-    const hidden = body.style.display === 'none';
-    body.style.display = hidden ? '' : 'none';
-    btnMinimize.textContent = hidden ? '−' : '+';
-  });
+  const title = document.createElement('span');
+  title.className = 'mt-modal-title';
+  title.textContent = groups
+    ? `Traduction — ${groups.length} image(s), ${results.length} bloc${results.length > 1 ? 's' : ''}`
+    : `Traduction — ${results.length} bloc${results.length > 1 ? 's' : ''}`;
 
   const btnClose = makeBtn('×', 'mt-btn', 'Fermer', () => {
     el.remove();
     state.overlays = state.overlays.filter(o => o !== el);
   });
 
-  header.append(btnMinimize, btnClose);
+  header.append(title, btnClose);
 
   const body = document.createElement('div');
-  body.className = 'mt-overlay-body';
+  body.className = 'mt-modal-body';
 
-  const origEl = document.createElement('p');
-  origEl.className = 'mt-original';
-  origEl.textContent = block.text;
+  const appendBlock = ({ original, translated }) => {
+    const block = document.createElement('div');
+    block.className = 'mt-block';
 
-  const transEl = document.createElement('p');
-  transEl.className = 'mt-translated';
-  transEl.textContent = translatedText;
+    const origEl = document.createElement('p');
+    origEl.className = 'mt-original';
+    origEl.textContent = original;
 
-  body.append(origEl, transEl);
+    const transEl = document.createElement('p');
+    transEl.className = 'mt-translated';
+    transEl.textContent = translated;
+
+    block.append(origEl, transEl);
+    body.appendChild(block);
+  };
+
+  if (groups) {
+    for (const group of groups) {
+      const groupTitle = document.createElement('div');
+      groupTitle.className = 'mt-group-title';
+      groupTitle.textContent = `Image ${group.imageIndex}`;
+      body.appendChild(groupTitle);
+      group.results.forEach(appendBlock);
+    }
+  } else {
+    results.forEach(appendBlock);
+  }
+
   el.append(header, body);
-
   makeDraggable(el, header);
   document.body.appendChild(el);
   state.overlays.push(el);
@@ -656,6 +672,46 @@ function hexToRgba(hex, alpha) {
 
 // ─── Main actions ──────────────────────────────────────────────────────────────
 
+// Runs OCR + translation for a single image against an existing loader and
+// returns the translated blocks. Throws on hard failure (unreadable image, OCR
+// error); returns [] when the image is read fine but no text is detected.
+// Shared by translateImage (single image) and translatePage (batch) so a batch
+// run uses one loader and one result set instead of one modal per image.
+async function runOCRTranslatePipeline(imageEl, loader) {
+  let dataUrl;
+  try {
+    dataUrl = await getImageDataUrl(imageEl, loader);
+  } catch (err) {
+    throw new Error(`Impossible de lire l'image : ${err.message}`);
+  }
+
+  loader.update('Connexion au moteur OCR…', 0.02);
+
+  let blocks;
+  try {
+    blocks = await runOCR(dataUrl, state.settings.ocrLang, loader, state.settings.deepScan);
+  } catch (err) {
+    throw new Error(`Erreur OCR : ${err.message}`);
+  }
+
+  if (!blocks || blocks.length === 0) return [];
+
+  loader.update(`${blocks.length} bloc(s) trouvé(s) — traduction…`, 1, '');
+
+  const results = [];
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    loader.update(
+      `Traduction ${i + 1} / ${blocks.length}…`,
+      1,
+      block.text.slice(0, 50) + (block.text.length > 50 ? '…' : '')
+    );
+    const translated = await translate(block.text, state.settings);
+    results.push({ original: block.text, translated });
+  }
+  return results;
+}
+
 async function translateImage(imageEl) {
   if (!imageEl) {
     notify("Aucune image sélectionnée — survolez l'image avant de cliquer", 'error');
@@ -667,63 +723,76 @@ async function translateImage(imageEl) {
   const loader = createLoader();
   loader.update('Lecture de l\'image…', 0);
 
-  let dataUrl;
+  let results;
   try {
-    dataUrl = await getImageDataUrl(imageEl);
+    results = await runOCRTranslatePipeline(imageEl, loader);
   } catch (err) {
     loader.remove();
-    notify(`Impossible de lire l'image : ${err.message}`, 'error');
+    notify(err.message, 'error');
     return;
   }
 
-  loader.update('Connexion au moteur OCR…', 0.02);
+  loader.remove();
 
-  let blocks;
-  try {
-    blocks = await runOCR(dataUrl, state.settings.ocrLang, loader);
-  } catch (err) {
-    loader.remove();
-    notify(`Erreur OCR : ${err.message}`, 'error');
-    return;
-  }
-
-  if (!blocks || blocks.length === 0) {
-    loader.remove();
+  if (results.length === 0) {
     notify("Aucun texte détecté dans l'image", 'warning');
     return;
   }
 
-  loader.update(`${blocks.length} bloc(s) trouvé(s) — traduction…`, 1, '');
-  const rect = imageEl.getBoundingClientRect();
-
-  for (let i = 0; i < blocks.length; i++) {
-    const block = blocks[i];
-    loader.update(
-      `Traduction ${i + 1} / ${blocks.length}…`,
-      1,
-      block.text.slice(0, 50) + (block.text.length > 50 ? '…' : '')
-    );
-    const translated = await translate(block.text, state.settings);
-    createOverlay(block, translated, rect, imageEl);
-  }
-
-  loader.remove();
-  notify(`Traduction terminée — ${blocks.length} bloc(s)`, 'success');
+  showTranslationModal(results);
+  notify(`Traduction terminée — ${results.length} bloc(s)`, 'success');
 }
 
 async function translatePage() {
   await loadSettings();
-  const images = Array.from(document.querySelectorAll('img')).filter(
-    img => img.offsetWidth >= 100 && img.offsetHeight >= 100 && !img.closest('.mt-overlay')
-  );
+
+  // Deduplicate by resolved src — webtoon pages often have the same <img> several
+  // times in the DOM (lazy-load placeholders, hidden clones, srcset duplicates).
+  const seen = new Set();
+  const images = Array.from(document.querySelectorAll('img')).filter(img => {
+    if (img.offsetWidth < 100 || img.offsetHeight < 100) return false;
+    if (img.closest('.mt-modal')) return false;
+    const src = img.currentSrc || img.src || '';
+    if (!src || seen.has(src)) return false;
+    seen.add(src);
+    return true;
+  });
 
   if (images.length === 0) {
     notify('Aucune image de taille suffisante trouvée', 'warning');
     return;
   }
 
-  notify(`Traduction de ${images.length} image(s) en cours…`, 'info');
-  for (const img of images) await translateImage(img);
+  // One shared loader and one combined modal for the whole batch — translating
+  // each image via translateImage() used to pop a separate centered modal per
+  // image, stacking them on top of each other for multi-image pages.
+  const loader = createLoader();
+  const groups = [];
+  let failCount = 0;
+
+  for (let i = 0; i < images.length; i++) {
+    loader.update(`Image ${i + 1} / ${images.length}…`, 0, '');
+    try {
+      const results = await runOCRTranslatePipeline(images[i], loader);
+      if (results.length > 0) groups.push({ imageIndex: i + 1, results });
+    } catch (err) {
+      failCount++;
+      console.warn(`[MT] Image ${i + 1}/${images.length} échouée :`, err.message);
+    }
+  }
+
+  loader.remove();
+
+  if (groups.length === 0) {
+    notify("Aucun texte détecté dans les images de la page", 'warning');
+    return;
+  }
+
+  const blockCount = groups.reduce((n, g) => n + g.results.length, 0);
+  showTranslationModal(groups.flatMap(g => g.results), groups.length > 1 ? groups : undefined);
+
+  const failSuffix = failCount > 0 ? ` — ${failCount} image(s) en échec` : '';
+  notify(`Traduction terminée — ${blockCount} bloc(s) sur ${groups.length} image(s)${failSuffix}`, 'success');
 }
 
 function toggleTranslations() {
