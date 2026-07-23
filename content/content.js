@@ -903,3 +903,18 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
   }
 });
+
+// Node-only export for unit tests (node:test) — no-op in the browser/content-script context.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    buildProviderChain,
+    translate,
+    hexToRgba,
+    defaultSettings,
+    MAX_PROVIDER_FAILURES,
+    PROVIDER_COOLDOWN_MS,
+    isProviderCoolingDown,
+    // Test-only: clears circuit-breaker state so tests don't leak cooldowns into each other.
+    __resetProviderCooldownsForTests: () => providerCooldowns.clear()
+  };
+}
